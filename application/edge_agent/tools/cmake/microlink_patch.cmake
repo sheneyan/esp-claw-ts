@@ -8,14 +8,18 @@ set(_MICROLINK_ORIGINAL_CORE_SHA256
     "a2bb6a02be34e8f6e03f2ba5b78472c2cd5472edd7d2f6e3158a836fcbb4a0b2")
 set(_MICROLINK_ORIGINAL_PEER_NVS_SHA256
     "6529d00c8765d83ee5279b35d41d055944111a4b6d8ec1731fd0f630801190d0")
+set(_MICROLINK_ORIGINAL_WG_MGR_SHA256
+    "a9cd0e603c0d701a7048e1e6823f90d58b1c2a84719afbe29d724f5bd3b82311")
 set(_MICROLINK_PATCHED_STUN_SHA256
     "9f2bf58ce17251401e3613e61cc4507219f19447087874a905732f864b09b316")
 set(_MICROLINK_PATCHED_COORD_SHA256
-    "9762c30a0c37cd5f24354f4f95dc49270dc8eeeebf2c758cc69530810b56e9d6")
+    "14148660f23e76ef5ea7a16d571d3620cb71c08b9f1649007a35fda9e97bc5fd")
 set(_MICROLINK_PATCHED_CORE_SHA256
     "4b8025b111659bcd943573feb5d2768fee64f33574181b0491988d6344035abc")
 set(_MICROLINK_PATCHED_PEER_NVS_SHA256
     "7388ac0b2cabf84f91645716fcc443e9ecf8685e07bbdd5a01c24b54eb505fb5")
+set(_MICROLINK_PATCHED_WG_MGR_SHA256
+    "8776a2b7e3a8c6aad4a7cd9cc9672d5653ae7de671d2b045e10ead498adf932e")
 
 function(_microlink_assert_upstream_bind_patch source_dir)
     file(READ "${source_dir}/src/ml_stun.c" _stun_source)
@@ -41,6 +45,31 @@ function(_microlink_assert_upstream_bind_patch source_dir)
     if(_helper_offset EQUAL -1 OR _tls_bind_count LESS 2)
         message(FATAL_ERROR
             "MicroLink patched copy is missing the upstream TLS helper or both HTTPS if_name bindings: ${source_dir}")
+    endif()
+    string(REGEX MATCHALL
+        "__atomic_load_n\\(&ml->upstream_netif, __ATOMIC_ACQUIRE\\)"
+        _upstream_atomic_loads
+        "${_coord_source}"
+    )
+    list(LENGTH _upstream_atomic_loads _upstream_atomic_load_count)
+    string(REGEX MATCHALL "upstream_netif" _coord_upstream_accesses "${_coord_source}")
+    list(LENGTH _coord_upstream_accesses _coord_upstream_access_count)
+    if(NOT _upstream_atomic_load_count EQUAL 2 OR
+       NOT _coord_upstream_access_count EQUAL 2)
+        message(FATAL_ERROR
+            "MicroLink patched copy must use exactly two acquire loads for upstream netif reads: ${source_dir}")
+    endif()
+
+    file(READ "${source_dir}/src/ml_wg_mgr.c" _wg_mgr_source)
+    string(FIND "${_wg_mgr_source}"
+        "__atomic_store_n(&ml->upstream_netif, (void *)upstream, __ATOMIC_RELEASE)"
+        _upstream_atomic_store_offset)
+    string(REGEX MATCHALL "upstream_netif" _wg_upstream_accesses "${_wg_mgr_source}")
+    list(LENGTH _wg_upstream_accesses _wg_upstream_access_count)
+    if(_upstream_atomic_store_offset EQUAL -1 OR
+       NOT _wg_upstream_access_count EQUAL 1)
+        message(FATAL_ERROR
+            "MicroLink patched copy must use one release store for the upstream netif write: ${source_dir}")
     endif()
 
     file(READ "${source_dir}/src/microlink.c" _core_source)
@@ -90,7 +119,8 @@ function(microlink_apply_upstream_bind_patch source_dir)
     if(NOT EXISTS "${source_dir}/src/ml_stun.c" OR
        NOT EXISTS "${source_dir}/src/ml_coord.c" OR
        NOT EXISTS "${source_dir}/src/microlink.c" OR
-       NOT EXISTS "${source_dir}/src/ml_peer_nvs.c")
+       NOT EXISTS "${source_dir}/src/ml_peer_nvs.c" OR
+       NOT EXISTS "${source_dir}/src/ml_wg_mgr.c")
         message(FATAL_ERROR
             "MicroLink upstream-bind patch requires exact component sources at: ${source_dir}")
     endif()
@@ -108,10 +138,12 @@ function(microlink_apply_upstream_bind_patch source_dir)
     file(SHA256 "${source_dir}/src/ml_coord.c" _coord_sha256)
     file(SHA256 "${source_dir}/src/microlink.c" _core_sha256)
     file(SHA256 "${source_dir}/src/ml_peer_nvs.c" _peer_nvs_sha256)
+    file(SHA256 "${source_dir}/src/ml_wg_mgr.c" _wg_mgr_sha256)
     if("${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" AND
        "${_coord_sha256}" STREQUAL "${_MICROLINK_PATCHED_COORD_SHA256}" AND
        "${_core_sha256}" STREQUAL "${_MICROLINK_PATCHED_CORE_SHA256}" AND
-       "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_PATCHED_PEER_NVS_SHA256}")
+       "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_PATCHED_PEER_NVS_SHA256}" AND
+       "${_wg_mgr_sha256}" STREQUAL "${_MICROLINK_PATCHED_WG_MGR_SHA256}")
         _microlink_assert_upstream_bind_patch("${source_dir}")
         message(STATUS "MicroLink upstream-bind patch already applied and verified at ${source_dir}")
         return()
@@ -119,13 +151,15 @@ function(microlink_apply_upstream_bind_patch source_dir)
     if(NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_STUN_SHA256}" OR
        NOT "${_coord_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_COORD_SHA256}" OR
        NOT "${_core_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_CORE_SHA256}" OR
-       NOT "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_PEER_NVS_SHA256}")
+       NOT "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_PEER_NVS_SHA256}" OR
+       NOT "${_wg_mgr_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_WG_MGR_SHA256}")
         message(FATAL_ERROR
             "MicroLink sources are neither the exact original nor patched revisions at ${source_dir}.\n"
             "Actual ml_stun.c SHA256: ${_stun_sha256}\n"
             "Actual ml_coord.c SHA256: ${_coord_sha256}\n"
             "Actual microlink.c SHA256: ${_core_sha256}\n"
-            "Actual ml_peer_nvs.c SHA256: ${_peer_nvs_sha256}")
+            "Actual ml_peer_nvs.c SHA256: ${_peer_nvs_sha256}\n"
+            "Actual ml_wg_mgr.c SHA256: ${_wg_mgr_sha256}")
     endif()
 
     execute_process(
@@ -147,16 +181,19 @@ function(microlink_apply_upstream_bind_patch source_dir)
     file(SHA256 "${source_dir}/src/ml_coord.c" _coord_sha256)
     file(SHA256 "${source_dir}/src/microlink.c" _core_sha256)
     file(SHA256 "${source_dir}/src/ml_peer_nvs.c" _peer_nvs_sha256)
+    file(SHA256 "${source_dir}/src/ml_wg_mgr.c" _wg_mgr_sha256)
     if(NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" OR
        NOT "${_coord_sha256}" STREQUAL "${_MICROLINK_PATCHED_COORD_SHA256}" OR
        NOT "${_core_sha256}" STREQUAL "${_MICROLINK_PATCHED_CORE_SHA256}" OR
-       NOT "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_PATCHED_PEER_NVS_SHA256}")
+       NOT "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_PATCHED_PEER_NVS_SHA256}" OR
+       NOT "${_wg_mgr_sha256}" STREQUAL "${_MICROLINK_PATCHED_WG_MGR_SHA256}")
         message(FATAL_ERROR
             "MicroLink patch output does not match the exact expected patched revisions at ${source_dir}.\n"
             "Actual ml_stun.c SHA256: ${_stun_sha256}\n"
             "Actual ml_coord.c SHA256: ${_coord_sha256}\n"
             "Actual microlink.c SHA256: ${_core_sha256}\n"
-            "Actual ml_peer_nvs.c SHA256: ${_peer_nvs_sha256}")
+            "Actual ml_peer_nvs.c SHA256: ${_peer_nvs_sha256}\n"
+            "Actual ml_wg_mgr.c SHA256: ${_wg_mgr_sha256}")
     endif()
     _microlink_assert_upstream_bind_patch("${source_dir}")
     message(STATUS "Applied and verified MicroLink upstream-bind patch at ${source_dir}")

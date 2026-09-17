@@ -40,8 +40,10 @@ typedef struct {
 
 esp_err_t ts_claw_init(const ts_claw_config_t *config);
 /*
- * While STA is online, the caller must keep sta_netif valid. Before destroying
- * or recreating it, call ts_claw_notify_wifi(false, NULL) and wait for ESP_OK.
+ * sta_netif is a borrowed application-lifetime object. It must remain valid
+ * from the first online notification until device restart or a future deinit
+ * API. A synchronous down notification unpins the link and updates status; it
+ * does not authorize destroying or recreating sta_netif.
  */
 esp_err_t ts_claw_notify_wifi(bool sta_has_ip, esp_netif_t *sta_netif);
 esp_err_t ts_claw_get_status(ts_claw_status_t *out_status);

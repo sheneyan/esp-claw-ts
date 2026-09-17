@@ -51,11 +51,22 @@ diff --git a/src/ml_stun.c b/src/ml_stun.c
 diff --git a/src/ml_coord.c b/src/ml_coord.c
 --- a/src/ml_coord.c
 +++ b/src/ml_coord.c
-@@ -86,0 +87,13 @@ void ml_bind_sock_to_upstream(microlink_t *ml, int fd)
+@@ -72,4 +72,5 @@ static void log_alloc_failure(const char *what, size_t size)
+-void ml_bind_sock_to_upstream(microlink_t *ml, int fd)
+-{
+-    if (!ml || fd < 0 || !ml->upstream_netif) return;
+-    struct netif *up = (struct netif *)ml->upstream_netif;
++void ml_bind_sock_to_upstream(microlink_t *ml, int fd)
++{
++    if (!ml || fd < 0) return;
++    struct netif *up = (struct netif *)__atomic_load_n(&ml->upstream_netif, __ATOMIC_ACQUIRE);
++    if (!up) return;
+@@ -86,0 +88,14 @@ void ml_bind_sock_to_upstream(microlink_t *ml, int fd)
 +static struct ifreq *ml_upstream_ifreq(microlink_t *ml, struct ifreq *ifr)
 +{
-+    if (!ml || !ifr || !ml->upstream_netif) return NULL;
-+    struct netif *up = (struct netif *)ml->upstream_netif;
++    if (!ml || !ifr) return NULL;
++    struct netif *up = (struct netif *)__atomic_load_n(&ml->upstream_netif, __ATOMIC_ACQUIRE);
++    if (!up) return NULL;
 +    if (!netif_is_up(up) || !netif_is_link_up(up)) return NULL;
 +
 +    memset(ifr, 0, sizeof(*ifr));
@@ -65,13 +76,13 @@ diff --git a/src/ml_coord.c b/src/ml_coord.c
 +    return ifr;
 +}
 +
-@@ -329,0 +343 @@ static int fetch_server_pubkey(microlink_t *ml, const char *host, const char *port) {
+@@ -329,0 +345 @@ static int fetch_server_pubkey(microlink_t *ml, const char *host, const char *port) {
 +        struct ifreq tls_if;
-@@ -333,0 +348 @@ static int fetch_server_pubkey(microlink_t *ml, const char *host, const char *port) {
+@@ -333,0 +350 @@ static int fetch_server_pubkey(microlink_t *ml, const char *host, const char *port) {
 +            .if_name           = ml_upstream_ifreq(ml, &tls_if),
-@@ -758,0 +774 @@ static int do_tcp_connect(microlink_t *ml) {
+@@ -758,0 +776 @@ static int do_tcp_connect(microlink_t *ml) {
 +        struct ifreq tls_if;
-@@ -762,0 +779 @@ static int do_tcp_connect(microlink_t *ml) {
+@@ -762,0 +781 @@ static int do_tcp_connect(microlink_t *ml) {
 +            .if_name           = ml_upstream_ifreq(ml, &tls_if),
 diff --git a/src/ml_peer_nvs.c b/src/ml_peer_nvs.c
 --- a/src/ml_peer_nvs.c
@@ -101,3 +112,9 @@ diff --git a/src/ml_peer_nvs.c b/src/ml_peer_nvs.c
 +    ESP_LOGI(TAG, "Peer NVS cleared");
 +    return ESP_OK;
 +}
+diff --git a/src/ml_wg_mgr.c b/src/ml_wg_mgr.c
+--- a/src/ml_wg_mgr.c
++++ b/src/ml_wg_mgr.c
+@@ -230 +230 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
+-    if (ml) ml->upstream_netif = (void *)upstream;
++    if (ml) __atomic_store_n(&ml->upstream_netif, (void *)upstream, __ATOMIC_RELEASE);
