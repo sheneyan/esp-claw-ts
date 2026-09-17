@@ -1,10 +1,24 @@
 #include "provision_button_policy.h"
 
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 int main(void)
 {
+    provision_button_arm_state_t arm;
+    provision_button_arm_init(&arm);
+    assert(!provision_button_arm_update(&arm, true));
+    assert(!provision_button_arm_update(&arm, true));
+    assert(!provision_button_arm_update(&arm, false));
+    assert(!provision_button_arm_update(&arm, false));
+    assert(!provision_button_arm_update(&arm, true));
+    assert(!provision_button_arm_update(&arm, false));
+    assert(!provision_button_arm_update(&arm, false));
+    assert(!provision_button_arm_update(&arm, false));
+    assert(provision_button_arm_update(&arm, false));
+    assert(provision_button_arm_update(&arm, true));
+
     assert(provision_button_classify_press(0) == PROVISION_BUTTON_ACTION_NONE);
     assert(provision_button_classify_press(2999) == PROVISION_BUTTON_ACTION_NONE);
     assert(provision_button_classify_press(3000) == PROVISION_BUTTON_ACTION_REOPEN_AP);

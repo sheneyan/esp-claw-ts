@@ -9,12 +9,34 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
 static const char *TAG = "settings_store";
 
 static char s_namespace[16];
 static bool s_initialized;
+static SemaphoreHandle_t s_write_mutex;
+static bool s_factory_reset_latched;
+static TaskHandle_t s_factory_reset_owner;
+
+static esp_err_t settings_store_lock(void)
+{
+    if (!s_write_mutex) return ESP_ERR_INVALID_STATE;
+    return xSemaphoreTake(s_write_mutex, portMAX_DELAY) == pdTRUE ? ESP_OK : ESP_FAIL;
+}
+
+static void settings_store_unlock(void)
+{
+    xSemaphoreGive(s_write_mutex);
+}
+
+static esp_err_t settings_store_check_write_allowed(void)
+{
+    return s_factory_reset_latched ? ESP_ERR_INVALID_STATE : ESP_OK;
+}
 
 static esp_err_t settings_store_open(nvs_open_mode_t mode, nvs_handle_t *handle)
 {
@@ -33,6 +55,11 @@ esp_err_t settings_store_init(const settings_store_config_t *config)
 
     if (strlcpy(s_namespace, config->namespace_name, sizeof(s_namespace)) >= sizeof(s_namespace)) {
         return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (!s_write_mutex) {
+        s_write_mutex = xSemaphoreCreateMutex();
+        if (!s_write_mutex) return ESP_ERR_NO_MEM;
     }
 
     s_initialized = true;
@@ -135,10 +162,19 @@ esp_err_t settings_store_set_string(const char *key, const char *value)
         return ESP_ERR_INVALID_ARG;
     }
 
+    esp_err_t err = settings_store_lock();
+    if (err != ESP_OK) return err;
+    err = settings_store_check_write_allowed();
+    if (err != ESP_OK) {
+        settings_store_unlock();
+        return err;
+    }
+
     nvs_handle_t handle;
-    esp_err_t err = settings_store_open(NVS_READWRITE, &handle);
+    err = settings_store_open(NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        settings_store_unlock();
         return err;
     }
 
@@ -146,6 +182,7 @@ esp_err_t settings_store_set_string(const char *key, const char *value)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s", key, esp_err_to_name(err));
         nvs_close(handle);
+        settings_store_unlock();
         return err;
     }
 
@@ -155,6 +192,7 @@ esp_err_t settings_store_set_string(const char *key, const char *value)
     }
 
     nvs_close(handle);
+    settings_store_unlock();
     return err;
 }
 
@@ -164,13 +202,23 @@ esp_err_t settings_store_erase_key(const char *key)
         return ESP_ERR_INVALID_ARG;
     }
 
+    esp_err_t err = settings_store_lock();
+    if (err != ESP_OK) return err;
+    err = settings_store_check_write_allowed();
+    if (err != ESP_OK) {
+        settings_store_unlock();
+        return err;
+    }
+
     nvs_handle_t handle;
-    esp_err_t err = settings_store_open(NVS_READWRITE, &handle);
+    err = settings_store_open(NVS_READWRITE, &handle);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
+        settings_store_unlock();
         return ESP_OK;
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        settings_store_unlock();
         return err;
     }
 
@@ -180,6 +228,7 @@ esp_err_t settings_store_erase_key(const char *key)
     } else if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_erase_key(%s) failed: %s", key, esp_err_to_name(err));
         nvs_close(handle);
+        settings_store_unlock();
         return err;
     }
 
@@ -189,16 +238,63 @@ esp_err_t settings_store_erase_key(const char *key)
     }
 
     nvs_close(handle);
+    settings_store_unlock();
+    return err;
+}
+
+esp_err_t settings_store_begin_factory_reset(void)
+{
+    esp_err_t err = settings_store_lock();
+    if (err != ESP_OK) return err;
+
+    TaskHandle_t caller = xTaskGetCurrentTaskHandle();
+    if (s_factory_reset_latched) {
+        err = s_factory_reset_owner == caller ? ESP_OK : ESP_ERR_INVALID_STATE;
+    } else {
+        s_factory_reset_latched = true;
+        s_factory_reset_owner = caller;
+        err = ESP_OK;
+    }
+
+    settings_store_unlock();
+    return err;
+}
+
+esp_err_t settings_store_cancel_factory_reset(void)
+{
+    esp_err_t err = settings_store_lock();
+    if (err != ESP_OK) return err;
+
+    if (!s_factory_reset_latched || s_factory_reset_owner != xTaskGetCurrentTaskHandle()) {
+        err = ESP_ERR_INVALID_STATE;
+    } else {
+        s_factory_reset_latched = false;
+        s_factory_reset_owner = NULL;
+        err = ESP_OK;
+    }
+
+    settings_store_unlock();
     return err;
 }
 
 esp_err_t settings_store_erase_all(void)
 {
+    esp_err_t err = settings_store_lock();
+    if (err != ESP_OK) return err;
+    if (s_factory_reset_latched && s_factory_reset_owner != xTaskGetCurrentTaskHandle()) {
+        settings_store_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+
     nvs_handle_t handle;
-    esp_err_t err = settings_store_open(NVS_READWRITE, &handle);
-    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    err = settings_store_open(NVS_READWRITE, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        settings_store_unlock();
+        return ESP_OK;
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        settings_store_unlock();
         return err;
     }
 
@@ -208,10 +304,15 @@ esp_err_t settings_store_erase_all(void)
         ESP_LOGE(TAG, "Failed to erase settings namespace: %s", esp_err_to_name(err));
     }
     nvs_close(handle);
+    settings_store_unlock();
     return err;
 }
 
 esp_err_t settings_store_commit(void)
 {
-    return ESP_OK;
+    esp_err_t err = settings_store_lock();
+    if (err != ESP_OK) return err;
+    err = settings_store_check_write_allowed();
+    settings_store_unlock();
+    return err;
 }

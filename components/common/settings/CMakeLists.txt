@@ -4,5 +4,6 @@ idf_component_register(
     INCLUDE_DIRS
         "include"
     REQUIRES
+        freertos
         nvs_flash
 )

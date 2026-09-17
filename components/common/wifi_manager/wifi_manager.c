@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "wifi_manager.h"
+#include "wifi_manager_ap_policy.h"
 
 #include <inttypes.h>
 #include <stdlib.h>
@@ -326,9 +327,8 @@ static esp_err_t apply_ap_network_config(void)
     const uint32_t host_ip = lwip_ntohl(ip_info.ip.addr);
     const uint32_t host_start = lwip_ntohl(lease.start_ip.addr);
     const uint32_t host_end = lwip_ntohl(lease.end_ip.addr);
-    if (host_start > host_end ||
-        (host_start & host_mask) != (host_ip & host_mask) ||
-        (host_end & host_mask) != (host_ip & host_mask)) {
+    if (!wifi_manager_ap_network_is_valid(host_ip, host_mask, host_start, host_end,
+                                          DHCPS_MAX_LEASE)) {
         return ESP_ERR_INVALID_ARG;
     }
 

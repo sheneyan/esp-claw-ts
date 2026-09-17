@@ -212,9 +212,21 @@ static esp_err_t main_restart_device(void)
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
 static esp_err_t main_factory_reset(void)
 {
-    esp_err_t err = ts_claw_factory_reset();
+    esp_err_t err = settings_store_begin_factory_reset();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to block application settings writes: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = ts_claw_factory_reset();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to reset TS-Claw identity: %s", esp_err_to_name(err));
+        esp_err_t cancel_err = settings_store_cancel_factory_reset();
+        if (cancel_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to release settings reset gate: %s",
+                     esp_err_to_name(cancel_err));
+            return cancel_err;
+        }
         return err;
     }
 

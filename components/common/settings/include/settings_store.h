@@ -26,6 +26,8 @@ esp_err_t settings_store_get_string(const char *key,
 esp_err_t settings_store_has_key(const char *key, bool *exists);
 esp_err_t settings_store_set_string(const char *key, const char *value);
 esp_err_t settings_store_erase_key(const char *key);
+esp_err_t settings_store_begin_factory_reset(void);
+esp_err_t settings_store_cancel_factory_reset(void);
 esp_err_t settings_store_erase_all(void);
 esp_err_t settings_store_commit(void);
 

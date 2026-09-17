@@ -34,12 +34,23 @@ static void provision_button_task(void *arg)
     (void)arg;
     bool was_pressed = false;
     int64_t pressed_at_us = 0;
+    provision_button_arm_state_t arm;
+    provision_button_arm_init(&arm);
 
     vTaskDelay(pdMS_TO_TICKS(PROVISION_BUTTON_BOOT_GUARD_MS));
 
     for (;;) {
         const bool pressed = gpio_get_level(PROVISION_BUTTON_GPIO) == 0;
         const int64_t now_us = esp_timer_get_time();
+
+        if (!arm.armed) {
+            if (provision_button_arm_update(&arm, pressed)) {
+                ESP_LOGI(TAG, "BOOT button armed after stable release");
+            }
+            was_pressed = false;
+            vTaskDelay(pdMS_TO_TICKS(PROVISION_BUTTON_POLL_MS));
+            continue;
+        }
 
         if (pressed && !was_pressed) {
             pressed_at_us = now_us;
