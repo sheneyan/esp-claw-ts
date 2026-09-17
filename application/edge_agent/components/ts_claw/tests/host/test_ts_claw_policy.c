@@ -171,6 +171,70 @@ static void test_null_policy_is_safe(void)
     TEST_CHECK(!ts_exit_policy_routes_public(NULL));
 }
 
+static void test_resource_guard_thresholds_and_recovery(void)
+{
+    ts_resource_guard_t guard;
+
+    ts_resource_guard_init(&guard);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 0u, 23u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 10000u, 23u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+
+    /* Either low-water mark is enough, but a healthy sample resets the run. */
+    TEST_CHECK(ts_resource_guard_sample(&guard, 20000u, 64u * 1024u, 7u * 1024u) ==
+               TS_RESOURCE_GUARD_STOP);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 30000u, 64u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 70000u, 48u * 1024u, 16u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 80000u, 48u * 1024u, 16u * 1024u) ==
+               TS_RESOURCE_GUARD_RETRY);
+}
+
+static void test_resource_guard_healthy_sample_resets_before_stop(void)
+{
+    ts_resource_guard_t guard;
+
+    ts_resource_guard_init(&guard);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 0u, 23u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 10000u, 64u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 20000u, 64u * 1024u, 7u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 30000u, 64u * 1024u, 7u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 40000u, 64u * 1024u, 7u * 1024u) ==
+               TS_RESOURCE_GUARD_STOP);
+}
+
+static void test_resource_guard_failed_retry_waits_before_retrying_again(void)
+{
+    ts_resource_guard_t guard;
+
+    ts_resource_guard_init(&guard);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 0u, 23u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 10000u, 23u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 20000u, 23u * 1024u, 32u * 1024u) ==
+               TS_RESOURCE_GUARD_STOP);
+
+    TEST_CHECK(ts_resource_guard_sample(&guard, 80000u, 48u * 1024u, 16u * 1024u) ==
+               TS_RESOURCE_GUARD_RETRY);
+    TEST_CHECK(guard.stopped);
+    ts_resource_guard_retry_completed(&guard, 80000u, false);
+    TEST_CHECK(guard.stopped);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 139999u, 48u * 1024u, 16u * 1024u) ==
+               TS_RESOURCE_GUARD_NONE);
+    TEST_CHECK(ts_resource_guard_sample(&guard, 140000u, 48u * 1024u, 16u * 1024u) ==
+               TS_RESOURCE_GUARD_RETRY);
+
+    ts_resource_guard_retry_completed(&guard, 140000u, true);
+    TEST_CHECK(!guard.stopped);
+}
+
 int main(void)
 {
     test_route_classification();
@@ -181,6 +245,9 @@ int main(void)
     test_disabled_and_tunnel_loss();
     test_opposite_probe_resets_counters();
     test_null_policy_is_safe();
+    test_resource_guard_thresholds_and_recovery();
+    test_resource_guard_healthy_sample_resets_before_stop();
+    test_resource_guard_failed_retry_waits_before_retrying_again();
 
     puts("ts_claw_policy: all tests passed");
     return 0;

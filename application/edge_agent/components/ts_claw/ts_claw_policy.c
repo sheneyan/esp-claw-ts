@@ -4,6 +4,12 @@
 
 enum {
     TS_EXIT_PROBE_THRESHOLD = 3,
+    TS_RESOURCE_LOW_FREE_BYTES = 24 * 1024,
+    TS_RESOURCE_LOW_LARGEST_BYTES = 8 * 1024,
+    TS_RESOURCE_RECOVER_FREE_BYTES = 48 * 1024,
+    TS_RESOURCE_RECOVER_LARGEST_BYTES = 16 * 1024,
+    TS_RESOURCE_LOW_SAMPLE_THRESHOLD = 3,
+    TS_RESOURCE_RETRY_DELAY_MS = 60 * 1000,
 };
 
 static bool address_matches(uint32_t host_order_ip, uint32_t network, uint32_t mask)
@@ -101,4 +107,70 @@ ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)
         return TS_ROUTE_STA;
     }
     return exit_active ? TS_ROUTE_WG : TS_ROUTE_STA;
+}
+
+void ts_resource_guard_init(ts_resource_guard_t *guard)
+{
+    if (guard == NULL) {
+        return;
+    }
+
+    *guard = (ts_resource_guard_t) {0};
+}
+
+ts_resource_guard_action_t ts_resource_guard_sample(ts_resource_guard_t *guard,
+                                                    uint64_t now_ms,
+                                                    size_t internal_free,
+                                                    size_t internal_largest)
+{
+    if (guard == NULL) {
+        return TS_RESOURCE_GUARD_NONE;
+    }
+
+    if (guard->stopped) {
+        const bool retry_delay_elapsed =
+            now_ms - guard->stopped_at_ms >= TS_RESOURCE_RETRY_DELAY_MS;
+        const bool recovered = internal_free >= TS_RESOURCE_RECOVER_FREE_BYTES &&
+                               internal_largest >= TS_RESOURCE_RECOVER_LARGEST_BYTES;
+        if (!retry_delay_elapsed || !recovered) {
+            return TS_RESOURCE_GUARD_NONE;
+        }
+        return TS_RESOURCE_GUARD_RETRY;
+    }
+
+    const bool low = internal_free < TS_RESOURCE_LOW_FREE_BYTES ||
+                     internal_largest < TS_RESOURCE_LOW_LARGEST_BYTES;
+    if (!low) {
+        guard->consecutive_low_samples = 0u;
+        return TS_RESOURCE_GUARD_NONE;
+    }
+
+    if (guard->consecutive_low_samples < TS_RESOURCE_LOW_SAMPLE_THRESHOLD) {
+        guard->consecutive_low_samples++;
+    }
+    if (guard->consecutive_low_samples < TS_RESOURCE_LOW_SAMPLE_THRESHOLD) {
+        return TS_RESOURCE_GUARD_NONE;
+    }
+
+    guard->stopped = true;
+    guard->stopped_at_ms = now_ms;
+    return TS_RESOURCE_GUARD_STOP;
+}
+
+void ts_resource_guard_retry_completed(ts_resource_guard_t *guard,
+                                       uint64_t now_ms,
+                                       bool succeeded)
+{
+    if (guard == NULL || !guard->stopped) {
+        return;
+    }
+
+    if (succeeded) {
+        guard->stopped = false;
+        guard->stopped_at_ms = 0u;
+        guard->consecutive_low_samples = 0u;
+        return;
+    }
+
+    guard->stopped_at_ms = now_ms;
 }

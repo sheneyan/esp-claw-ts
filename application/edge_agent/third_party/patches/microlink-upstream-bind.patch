@@ -1,0 +1,67 @@
+diff --git a/src/ml_stun.c b/src/ml_stun.c
+--- a/src/ml_stun.c
++++ b/src/ml_stun.c
+@@ -126,6 +126,7 @@ static esp_err_t ensure_stun_socket(microlink_t *ml) {
+         ESP_LOGE(TAG, "Failed to create STUN socket: %d", errno);
+         return ESP_FAIL;
+     }
++    ml_bind_sock_to_upstream(ml, ml->stun_sock);
+ 
+     /* Non-blocking */
+     int flags = ml_fcntl(ml->stun_sock, F_GETFL, 0);
+@@ -473,6 +474,7 @@ static esp_err_t ensure_stun_socket6(microlink_t *ml) {
+         ESP_LOGD(TAG, "Failed to create IPv6 STUN socket: %d (expected on IPv4-only)", errno);
+         return ESP_FAIL;
+     }
++    ml_bind_sock_to_upstream(ml, ml->stun_sock6);
+ 
+     /* Non-blocking */
+     int flags = ml_fcntl(ml->stun_sock6, F_GETFL, 0);
+diff --git a/src/ml_coord.c b/src/ml_coord.c
+--- a/src/ml_coord.c
++++ b/src/ml_coord.c
+@@ -87,6 +87,19 @@ void ml_bind_sock_to_upstream(microlink_t *ml, int fd)
+     }
+ }
+ 
++static struct ifreq *ml_upstream_ifreq(microlink_t *ml, struct ifreq *ifr)
++{
++    if (!ml || !ifr || !ml->upstream_netif) return NULL;
++    struct netif *up = (struct netif *)ml->upstream_netif;
++    if (!netif_is_up(up) || !netif_is_link_up(up)) return NULL;
++
++    memset(ifr, 0, sizeof(*ifr));
++    netif_index_to_name(netif_get_index(up), ifr->ifr_name);
++    if (ifr->ifr_name[0] == '\0') return NULL;
++
++    return ifr;
++}
++
+ /* Effective control plane host: NVS override or compiled default */
+ #define CTRL_HOST(ml) ((ml)->ctrl_host[0] ? (ml)->ctrl_host : ML_CTRL_HOST)
+ 
+@@ -327,10 +340,12 @@ static int fetch_server_pubkey(microlink_t *ml, const char *host, const char *port) {
+         ESP_LOGI(TAG, "Fetching Noise server pubkey from https://%s:%s/key?v=%d", host, port,
+                  ML_CTRL_PROTOCOL_VER);
+ 
++        struct ifreq tls_if;
+         const esp_tls_cfg_t cfg = {
+             .crt_bundle_attach = esp_crt_bundle_attach,
+             .timeout_ms        = 10000,
+             .non_block         = false,
++            .if_name           = ml_upstream_ifreq(ml, &tls_if),
+         };
+         esp_tls_t *tls = esp_tls_init();
+         if (!tls) {
+@@ -756,9 +771,11 @@ static int do_tcp_connect(microlink_t *ml) {
+      * =================================================================== */
+     if (ml->use_tls) {
++        struct ifreq tls_if;
+         const esp_tls_cfg_t cfg = {
+             .crt_bundle_attach = esp_crt_bundle_attach,
+             .timeout_ms        = 10000,
+             .non_block         = false,
++            .if_name           = ml_upstream_ifreq(ml, &tls_if),
+         };
+         esp_tls_t *tls = esp_tls_init();
+         if (tls == NULL) {
