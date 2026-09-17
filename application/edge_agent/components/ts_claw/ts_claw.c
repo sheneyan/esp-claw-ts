@@ -919,6 +919,7 @@ esp_err_t ts_claw_init(const ts_claw_config_t *config)
 
     s_ts.status.enabled = config->enabled;
     s_ts.status.auth_key_set = s_ts.auth_key[0] != '\0';
+    s_ts.status.exit_node_ip = config->exit_node_ip;
     s_ts.status.exit_state = config->exit_node_ip != 0u ? TS_EXIT_PENDING : TS_EXIT_DISABLED;
     copy_string(s_ts.status.egress, sizeof(s_ts.status.egress), "unavailable");
     ts_resource_guard_init(&s_ts.resource_guard);

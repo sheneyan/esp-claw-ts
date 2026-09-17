@@ -210,6 +210,100 @@ static esp_err_t main_restart_device(void)
 }
 
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+static const char *main_tailscale_exit_state_name(ts_exit_state_t state)
+{
+    switch (state) {
+    case TS_EXIT_DISABLED:
+        return "disabled";
+    case TS_EXIT_PENDING:
+        return "pending";
+    case TS_EXIT_ACTIVE:
+        return "active";
+    case TS_EXIT_FALLBACK:
+        return "fallback";
+    default:
+        return "unknown";
+    }
+}
+
+static esp_err_t main_get_tailscale_status(http_server_tailscale_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "status is NULL");
+
+    ts_claw_status_t *snapshot = calloc(1, sizeof(*snapshot));
+    if (!snapshot) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = ts_claw_get_status(snapshot);
+    if (err != ESP_OK) {
+        free(snapshot);
+        return err;
+    }
+
+    memset(status, 0, sizeof(*status));
+    status->enabled = snapshot->enabled;
+    status->connected = snapshot->connected;
+    status->auth_key_set = snapshot->auth_key_set;
+    if (snapshot->vpn_ip != 0u) {
+        microlink_ip_to_str(snapshot->vpn_ip, status->vpn_ip);
+    } else {
+        strlcpy(status->vpn_ip, "0.0.0.0", sizeof(status->vpn_ip));
+    }
+    strlcpy(status->path,
+            !snapshot->connected ? "unavailable" :
+            snapshot->direct_path_available ? "direct" : "derp",
+            sizeof(status->path));
+    status->peer_count = snapshot->peer_count;
+    status->peer_online = snapshot->peer_online;
+    if (snapshot->exit_node_ip != 0u) {
+        microlink_ip_to_str(snapshot->exit_node_ip, status->exit_node);
+    }
+    strlcpy(status->exit_state, main_tailscale_exit_state_name(snapshot->exit_state),
+            sizeof(status->exit_state));
+    strlcpy(status->egress, snapshot->egress, sizeof(status->egress));
+    strlcpy(status->last_error, snapshot->last_error, sizeof(status->last_error));
+    status->heap_internal_free = snapshot->internal_free;
+    status->heap_internal_largest = snapshot->internal_largest;
+    status->heap_psram_free = snapshot->psram_free;
+
+    free(snapshot);
+    return ESP_OK;
+}
+
+static int main_get_tailscale_exit_nodes(http_server_tailscale_exit_node_t *nodes, int capacity)
+{
+    if (capacity < 0 || (capacity > 0 && !nodes)) {
+        return -ESP_ERR_INVALID_ARG;
+    }
+    if (capacity == 0) {
+        return 0;
+    }
+
+    microlink_peer_info_t *peers = calloc((size_t)capacity, sizeof(*peers));
+    if (!peers) {
+        return -ESP_ERR_NO_MEM;
+    }
+
+    int count = ts_claw_get_exit_nodes(peers, capacity);
+    if (count >= 0) {
+        if (count > capacity) {
+            count = -ESP_ERR_INVALID_SIZE;
+        } else {
+            for (int i = 0; i < count; ++i) {
+                microlink_ip_to_str(peers[i].vpn_ip, nodes[i].ip);
+                strlcpy(nodes[i].hostname, peers[i].hostname, sizeof(nodes[i].hostname));
+                nodes[i].online = peers[i].online;
+                nodes[i].direct = peers[i].direct_path;
+                nodes[i].derp_region = peers[i].derp_region;
+            }
+        }
+    }
+
+    free(peers);
+    return count;
+}
+
 static esp_err_t main_factory_reset(void)
 {
     esp_err_t err = settings_store_begin_factory_reset();
@@ -391,6 +485,10 @@ void app_main(void)
             .wechat_login_get_status = main_wechat_login_get_status,
             .wechat_login_cancel = main_wechat_login_cancel,
             .wechat_login_mark_persisted = main_wechat_login_mark_persisted,
+#endif
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+            .get_tailscale_status = main_get_tailscale_status,
+            .get_tailscale_exit_nodes = main_get_tailscale_exit_nodes,
 #endif
         },
     }));

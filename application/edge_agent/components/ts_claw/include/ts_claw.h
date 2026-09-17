@@ -28,6 +28,7 @@ typedef struct {
     bool direct_path_available;
     bool auth_key_set;
     uint32_t vpn_ip;
+    uint32_t exit_node_ip;
     int peer_count;
     int peer_online;
     ts_exit_state_t exit_state;
