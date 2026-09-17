@@ -841,7 +841,7 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
     config.interval_ms = TS_CLAW_EXIT_PROBE_INTERVAL_MS;
     config.timeout_ms = TS_CLAW_EXIT_PROBE_TIMEOUT_MS;
     config.data_size = TS_CLAW_EXIT_PROBE_DATA_SIZE;
-    config.interface = netif_get_index(wg_netif);
+    config.interface = ts_exit_probe_interface_binding();
     IP_SET_TYPE_VAL(config.target_addr, IPADDR_TYPE_V4);
     ip4_addr_set_u32(ip_2_ip4(&config.target_addr),
                      lwip_htonl(s_ts.desired_exit_node_ip));

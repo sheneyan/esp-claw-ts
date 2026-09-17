@@ -190,6 +190,16 @@ ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)
     return exit_active ? TS_ROUTE_WG : TS_ROUTE_STA;
 }
 
+uint32_t ts_exit_probe_interface_binding(void)
+{
+    /*
+     * CGNAT destinations are already forced onto the WireGuard netif by the
+     * route hook.  Binding ESP-IDF's raw ICMP socket to the custom netif makes
+     * sendto() return zero bytes on hardware, so leave the socket unbound.
+     */
+    return 0u;
+}
+
 void ts_resource_guard_init(ts_resource_guard_t *guard)
 {
     if (guard == NULL) {

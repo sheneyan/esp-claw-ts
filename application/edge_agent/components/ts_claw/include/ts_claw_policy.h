@@ -58,6 +58,7 @@ bool ts_route_is_loopback(uint32_t host_order_ip);
 bool ts_route_is_local_bypass(uint32_t host_order_ip);
 bool ts_route_is_public_unicast(uint32_t host_order_ip);
 ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active);
+uint32_t ts_exit_probe_interface_binding(void);
 
 void ts_resource_guard_init(ts_resource_guard_t *guard);
 ts_resource_guard_action_t ts_resource_guard_sample(ts_resource_guard_t *guard,
