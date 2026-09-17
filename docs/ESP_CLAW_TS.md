@@ -219,11 +219,13 @@ sample is diagnostic evidence, not by itself proof of a broken connection.
 Every agent-requested mutation requires an explicit request from the current
 user in the current interaction, and the tool call must contain
 `user_confirmed: true`. The agent must not infer permission from earlier
-messages or from a diagnostic result. A user clicking an Exit Node, clear, or
-reconnect control in the web interface directly confirms that web action, so
-the HTTP request does not use the agent-only `user_confirmed` field. Both paths
-call the same serialized live-control service and report the same operational
-result model.
+messages or from a diagnostic result. The web interface currently provides live
+Exit Node selection and clearing; choosing either directly confirms that web
+action, so its HTTP request does not use the agent-only `user_confirmed` field.
+Reconnect is available through the confirmed `tailscale_reconnect` agent tool
+and the `/api/tailscale/reconnect` HTTP API, not as a page button. The web,
+agent-tool, and direct-API paths call the same serialized live-control service
+and report the same operational result model.
 
 The agent cannot change the device hostname, auth key, login server, enabled
 state, or device identity. Those remain settings-only operations in the web
