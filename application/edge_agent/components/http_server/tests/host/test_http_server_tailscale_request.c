@@ -43,6 +43,17 @@ static void check_set_invalid(const char *body)
     CHECK(selector[0] == '\0');
 }
 
+static void check_set_invalid_bytes(const char *body, size_t body_length)
+{
+    char selector[HTTP_SERVER_TAILSCALE_SELECTOR_LEN];
+    memset(selector, 'x', sizeof(selector));
+    http_server_tailscale_request_result_t result =
+        http_server_tailscale_parse_set_request(body, body_length, selector);
+
+    CHECK(result == HTTP_SERVER_TAILSCALE_REQUEST_INVALID);
+    CHECK(selector[0] == '\0');
+}
+
 static void test_set_request_contract(void)
 {
     check_set_ok("{\"node\":\"100.104.62.56\"}", "100.104.62.56");
@@ -76,6 +87,46 @@ static void test_set_request_contract(void)
               terminal_nul, sizeof(terminal_nul) - 1u, selector) ==
           HTTP_SERVER_TAILSCALE_REQUEST_INVALID);
     CHECK(selector[0] == '\0');
+}
+
+static void test_strict_json_lexical_contract(void)
+{
+    const char raw_newline[] = "{\"node\":\"bad\nnode\"}";
+    const char raw_tab[] = "{\"node\":\"bad\tnode\"}";
+    const char raw_control[] = {
+        '{', '"', 'n', 'o', 'd', 'e', '"', ':', '"', 'a', 0x01, 'b', '"', '}'
+    };
+    const char trailing_control[] = {'{', '}', 0x01};
+    const char leading_vertical_tab[] = {0x0b, '{', '}'};
+    const char trailing_form_feed[] = {'{', '}', 0x0c};
+
+    check_set_invalid_bytes(raw_newline, sizeof(raw_newline) - 1u);
+    check_set_invalid_bytes(raw_tab, sizeof(raw_tab) - 1u);
+    check_set_invalid_bytes(raw_control, sizeof(raw_control));
+    CHECK(http_server_tailscale_parse_empty_request(
+              trailing_control, sizeof(trailing_control)) ==
+          HTTP_SERVER_TAILSCALE_REQUEST_INVALID);
+    CHECK(http_server_tailscale_parse_empty_request(
+              leading_vertical_tab, sizeof(leading_vertical_tab)) ==
+          HTTP_SERVER_TAILSCALE_REQUEST_INVALID);
+    CHECK(http_server_tailscale_parse_empty_request(
+              trailing_form_feed, sizeof(trailing_form_feed)) ==
+          HTTP_SERVER_TAILSCALE_REQUEST_INVALID);
+
+    const char allowed_outer_whitespace[] = " \t\r\n{}\n\t ";
+    CHECK(http_server_tailscale_parse_empty_request(
+              allowed_outer_whitespace,
+              sizeof(allowed_outer_whitespace) - 1u) ==
+          HTTP_SERVER_TAILSCALE_REQUEST_OK);
+
+    check_set_invalid("{\"node\":\"bad\\qescape\"}");
+    check_set_invalid("{\"node\":\"bad\\u12g4\"}");
+    check_set_invalid("{\"node\":\"bad\\u123\"}");
+
+    check_set_ok("{\"node\":\"quote\\\"slash\\\\node\"}",
+                 "quote\"slash\\node");
+    check_set_ok("{\"node\":\"line\\nnode\"}", "line\nnode");
+    check_set_ok("{\"node\":\"literal\\\\u0000\"}", "literal\\u0000");
 }
 
 static void test_set_request_length_boundaries(void)
@@ -227,6 +278,7 @@ static void test_response_rendering_is_complete_and_escaped(void)
 int main(void)
 {
     test_set_request_contract();
+    test_strict_json_lexical_contract();
     test_set_request_length_boundaries();
     test_empty_action_request_contract();
     test_http_status_mapping();

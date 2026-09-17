@@ -24,6 +24,64 @@
 #define TAILSCALE_ERROR_RUNTIME_APPLY_FAILED "runtime_apply_failed"
 #define TAILSCALE_ERROR_RECONNECT_FAILED     "reconnect_failed"
 
+static bool is_json_hex_digit(unsigned char value)
+{
+    return (value >= '0' && value <= '9') ||
+           (value >= 'a' && value <= 'f') ||
+           (value >= 'A' && value <= 'F');
+}
+
+static bool strict_json_lexically_valid(const char *body, size_t length)
+{
+    bool in_string = false;
+    bool escaped = false;
+
+    for (size_t index = 0u; index < length; ++index) {
+        unsigned char value = (unsigned char)body[index];
+        if (!in_string) {
+            if (value < 0x20u && value != '\t' && value != '\n' &&
+                value != '\r') {
+                return false;
+            }
+            if (value == '"') {
+                in_string = true;
+            }
+            continue;
+        }
+
+        if (escaped) {
+            if (value == 'u') {
+                if (index + 4u >= length) {
+                    return false;
+                }
+                for (size_t digit = 1u; digit <= 4u; ++digit) {
+                    if (!is_json_hex_digit((unsigned char)body[index + digit])) {
+                        return false;
+                    }
+                }
+                index += 4u;
+            } else if (value != '"' && value != '\\' && value != '/' &&
+                       value != 'b' && value != 'f' && value != 'n' &&
+                       value != 'r' && value != 't') {
+                return false;
+            }
+            escaped = false;
+            continue;
+        }
+
+        if (value < 0x20u) {
+            return false;
+        }
+        if (value == '\\') {
+            escaped = true;
+        } else if (value == '"') {
+            in_string = false;
+        }
+    }
+
+    return !in_string && !escaped;
+}
+
 static bool contains_decoded_nul_escape(const char *body, size_t length)
 {
     for (size_t index = 0u; index + 4u < length; ++index) {
@@ -54,6 +112,7 @@ static http_server_tailscale_request_result_t parse_complete_json(
     if (!out || (body_length > 0u && !body) ||
         body_length > HTTP_SERVER_TAILSCALE_REQUEST_BODY_MAX ||
         (body_length > 0u && memchr(body, '\0', body_length) != NULL) ||
+        !strict_json_lexically_valid(body, body_length) ||
         contains_decoded_nul_escape(body, body_length)) {
         return HTTP_SERVER_TAILSCALE_REQUEST_INVALID;
     }

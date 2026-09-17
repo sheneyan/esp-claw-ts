@@ -20,32 +20,50 @@ add_executable(test_http_server_tailscale_request
     ${CJSON_SOURCE}
 )
 
+add_executable(test_http_server_tailscale_handlers
+    test_http_server_tailscale_handlers.c
+    ../../http_server_tailscale_api.c
+    ../../http_server_tailscale_request.c
+    ${CJSON_SOURCE}
+)
+
 if(CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
     set_source_files_properties(${CJSON_SOURCE} PROPERTIES
         COMPILE_OPTIONS -Wno-deprecated-declarations
     )
 endif()
 
-target_include_directories(test_http_server_tailscale_request PRIVATE
-    stubs
-    ../..
-    ../../include
-    ../../../../managed_components/espressif__cjson/cJSON
+set(HTTP_SERVER_TEST_TARGETS
+    test_http_server_tailscale_request
+    test_http_server_tailscale_handlers
 )
 
-if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(test_http_server_tailscale_request PRIVATE
-        -Wall -Wextra -Werror -pedantic -UNDEBUG
+foreach(test_target IN LISTS HTTP_SERVER_TEST_TARGETS)
+    target_include_directories(${test_target} PRIVATE
+        stubs
+        ../..
+        ../../include
+        ../../../../managed_components/espressif__cjson/cJSON
     )
-    if(HTTP_SERVER_TEST_SANITIZERS)
-        target_compile_options(test_http_server_tailscale_request PRIVATE
-            -fsanitize=address,undefined -fno-omit-frame-pointer
+endforeach()
+
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    foreach(test_target IN LISTS HTTP_SERVER_TEST_TARGETS)
+        target_compile_options(${test_target} PRIVATE
+            -Wall -Wextra -Werror -pedantic -UNDEBUG
         )
-        target_link_options(test_http_server_tailscale_request PRIVATE
-            -fsanitize=address,undefined
-        )
-    endif()
+        if(HTTP_SERVER_TEST_SANITIZERS)
+            target_compile_options(${test_target} PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer
+            )
+            target_link_options(${test_target} PRIVATE
+                -fsanitize=address,undefined
+            )
+        endif()
+    endforeach()
 endif()
 
 add_test(NAME http_server_tailscale_request
          COMMAND test_http_server_tailscale_request)
+add_test(NAME http_server_tailscale_handlers
+         COMMAND test_http_server_tailscale_handlers)
