@@ -1,0 +1,5 @@
+#pragma once
+
+#define CONFIG_APP_WIFI_SSID ""
+#define CONFIG_APP_WIFI_PASSWORD ""
+#define CONFIG_APP_SEARCH_HTTP_ALLOWLIST ""

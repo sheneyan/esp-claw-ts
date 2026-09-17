@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sdkconfig.h"
@@ -499,19 +500,24 @@ esp_err_t app_config_load(app_config_t *config)
 
 esp_err_t app_config_save(const app_config_t *config)
 {
+    const size_t field_count = sizeof(s_fields) / sizeof(s_fields[0]);
+    settings_store_string_entry_t *entries;
+    esp_err_t err;
+
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    for (size_t i = 0; i < sizeof(s_fields) / sizeof(s_fields[0]); ++i) {
-        esp_err_t err = settings_store_set_string(s_fields[i].key,
-                                                  app_config_field_cptr(config, &s_fields[i]));
-        if (err != ESP_OK) {
-            return err;
-        }
+    entries = calloc(field_count, sizeof(*entries));
+    if (!entries) {
+        return ESP_ERR_NO_MEM;
     }
-
-    return settings_store_commit();
+    for (size_t i = 0u; i < field_count; ++i) {
+        entries[i].key = s_fields[i].key;
+        entries[i].value = app_config_field_cptr(config, &s_fields[i]);
+    }
+    err = settings_store_set_strings_atomic(entries, field_count);
+    free(entries);
+    return err;
 }
 
 esp_err_t app_config_validate_wifi(const app_config_t *config, const char **message)

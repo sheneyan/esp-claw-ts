@@ -156,13 +156,41 @@ esp_err_t settings_store_has_key(const char *key, bool *exists)
     return ESP_OK;
 }
 
-esp_err_t settings_store_set_string(const char *key, const char *value)
+static esp_err_t settings_store_validate_string_entries(
+    const settings_store_string_entry_t *entries, size_t count)
 {
-    if (!key) {
+    if (!entries || count == 0u) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (count > SETTINGS_STORE_ATOMIC_MAX_ENTRIES) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    for (size_t index = 0u; index < count; ++index) {
+        size_t key_length = 0u;
+        if (!entries[index].key || entries[index].key[0] == '\0') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        while (key_length <= SETTINGS_STORE_KEY_MAX_LENGTH &&
+               entries[index].key[key_length] != '\0') {
+            ++key_length;
+        }
+        if (key_length > SETTINGS_STORE_KEY_MAX_LENGTH) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+    }
+    return ESP_OK;
+}
 
-    esp_err_t err = settings_store_lock();
+esp_err_t settings_store_set_strings_atomic(
+    const settings_store_string_entry_t *entries, size_t count)
+{
+    nvs_handle_t handle;
+    esp_err_t err = settings_store_validate_string_entries(entries, count);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = settings_store_lock();
     if (err != ESP_OK) return err;
     err = settings_store_check_write_allowed();
     if (err != ESP_OK) {
@@ -170,7 +198,6 @@ esp_err_t settings_store_set_string(const char *key, const char *value)
         return err;
     }
 
-    nvs_handle_t handle;
     err = settings_store_open(NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
@@ -178,22 +205,34 @@ esp_err_t settings_store_set_string(const char *key, const char *value)
         return err;
     }
 
-    err = nvs_set_str(handle, key, value ? value : "");
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s", key, esp_err_to_name(err));
-        nvs_close(handle);
-        settings_store_unlock();
-        return err;
+    for (size_t index = 0u; index < count; ++index) {
+        err = nvs_set_str(handle, entries[index].key,
+                          entries[index].value ? entries[index].value : "");
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s",
+                     entries[index].key, esp_err_to_name(err));
+            break;
+        }
     }
-
-    err = nvs_commit(handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
+        }
     }
 
     nvs_close(handle);
     settings_store_unlock();
     return err;
+}
+
+esp_err_t settings_store_set_string(const char *key, const char *value)
+{
+    const settings_store_string_entry_t entry = {
+        .key = key,
+        .value = value,
+    };
+    return settings_store_set_strings_atomic(&entry, 1u);
 }
 
 esp_err_t settings_store_erase_key(const char *key)
