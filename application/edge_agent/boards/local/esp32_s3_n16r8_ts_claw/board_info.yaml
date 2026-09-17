@@ -1,0 +1,4 @@
+board: esp32_s3_n16r8_ts_claw
+chip: esp32s3
+description: "ESP32-S3 N16R8 headless TS-Claw prototype"
+manufacturer: "LOCAL"

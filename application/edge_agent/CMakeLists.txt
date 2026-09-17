@@ -3,6 +3,11 @@ cmake_minimum_required(VERSION 3.16)
 include("${CMAKE_SOURCE_DIR}/tools/cmake/esp_idf_patch.cmake")
 include("${CMAKE_SOURCE_DIR}/tools/cmake/flash_partition_defaults.cmake")
 
+list(APPEND EXTRA_COMPONENT_DIRS
+    "${CMAKE_SOURCE_DIR}/third_party/microlink/components/microlink"
+    "${CMAKE_SOURCE_DIR}/third_party/microlink/components/microlink/components/wireguard_lwip"
+)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(edge_agent VERSION 0.1.0)
 
