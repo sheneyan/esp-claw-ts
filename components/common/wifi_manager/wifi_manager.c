@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "esp_event.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
@@ -17,6 +18,8 @@
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "dhcpserver/dhcpserver.h"
+#include "lwip/def.h"
 #include "sdkconfig.h"
 
 #ifdef CONFIG_IDF_TARGET_ESP32P4
@@ -24,6 +27,12 @@
 #endif
 
 static const char *TAG = "wifi_manager";
+
+ESP_EVENT_DEFINE_BASE(WIFI_MANAGER_EVENT);
+
+enum {
+    WIFI_MANAGER_EVENT_SET_PROVISIONING_AP = 1,
+};
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -67,6 +76,10 @@ static EXT_RAM_BSS_ATTR char s_sta_password[65];
 static EXT_RAM_BSS_ATTR char s_ap_ssid_override[33];
 static EXT_RAM_BSS_ATTR char s_ap_password[65];
 static EXT_RAM_BSS_ATTR char s_ap_behavior[16];
+static EXT_RAM_BSS_ATTR char s_config_ap_ip[16];
+static EXT_RAM_BSS_ATTR char s_config_ap_netmask[16];
+static EXT_RAM_BSS_ATTR char s_dhcp_start[16];
+static EXT_RAM_BSS_ATTR char s_dhcp_end[16];
 static EXT_RAM_BSS_ATTR char s_ap_ssid_prefix[33];
 static wifi_mode_state_t s_mode = WM_STATE_OFF;
 static esp_netif_t *s_sta_netif;
@@ -83,6 +96,7 @@ static void reset_sta_runtime_state(void);
 static void reconnect_timer_cb(void *arg);
 static void arm_reconnect(void);
 static void reopen_ap_if_needed(void);
+static esp_err_t set_provisioning_ap_enabled(bool enabled);
 
 static const char *wifi_manager_mode_string(wifi_mode_state_t mode)
 {
@@ -114,6 +128,10 @@ static void sync_owned_config(const wifi_manager_config_t *config)
     copy_owned_string(s_ap_ssid_override, sizeof(s_ap_ssid_override), config->ap_ssid);
     copy_owned_string(s_ap_password, sizeof(s_ap_password), config->ap_password);
     copy_owned_string(s_ap_behavior, sizeof(s_ap_behavior), config->ap_behavior);
+    copy_owned_string(s_config_ap_ip, sizeof(s_config_ap_ip), config->ap_ip);
+    copy_owned_string(s_config_ap_netmask, sizeof(s_config_ap_netmask), config->ap_netmask);
+    copy_owned_string(s_dhcp_start, sizeof(s_dhcp_start), config->dhcp_start);
+    copy_owned_string(s_dhcp_end, sizeof(s_dhcp_end), config->dhcp_end);
 
     s_config = *config;
     s_config.sta_ssid = s_sta_ssid[0] ? s_sta_ssid : NULL;
@@ -122,6 +140,10 @@ static void sync_owned_config(const wifi_manager_config_t *config)
     s_config.ap_ssid = s_ap_ssid_override[0] ? s_ap_ssid_override : NULL;
     s_config.ap_password = s_ap_password[0] ? s_ap_password : NULL;
     s_config.ap_behavior = s_ap_behavior[0] ? s_ap_behavior : NULL;
+    s_config.ap_ip = s_config_ap_ip[0] ? s_config_ap_ip : NULL;
+    s_config.ap_netmask = s_config_ap_netmask[0] ? s_config_ap_netmask : NULL;
+    s_config.dhcp_start = s_dhcp_start[0] ? s_dhcp_start : NULL;
+    s_config.dhcp_end = s_dhcp_end[0] ? s_dhcp_end : NULL;
 }
 
 static const char *wifi_manager_ap_ssid_prefix(void)
@@ -199,6 +221,101 @@ static void refresh_ap_ip_str(void)
     }
 }
 
+static bool config_has_explicit_ap_network(const wifi_manager_config_t *config)
+{
+    return (config->ap_ip && config->ap_ip[0]) ||
+           (config->ap_netmask && config->ap_netmask[0]) ||
+           (config->dhcp_start && config->dhcp_start[0]) ||
+           (config->dhcp_end && config->dhcp_end[0]);
+}
+
+static esp_err_t parse_optional_ip4(const char *value, esp_ip4_addr_t *out)
+{
+    if (!value || value[0] == '\0') return ESP_OK;
+    return esp_netif_str_to_ip4(value, out);
+}
+
+static esp_err_t apply_ap_network_config(void)
+{
+    if (!config_has_explicit_ap_network(&s_config)) return ESP_OK;
+    if (!s_ap_netif) return ESP_ERR_INVALID_STATE;
+
+    esp_netif_ip_info_t ip_info = {0};
+    esp_netif_ip_info_t original_ip_info = {0};
+    dhcps_lease_t lease = {0};
+    dhcps_lease_t original_lease = {0};
+    esp_netif_dhcp_status_t dhcp_status = ESP_NETIF_DHCP_INIT;
+    esp_err_t err = esp_netif_get_ip_info(s_ap_netif, &ip_info);
+    if (err != ESP_OK) return err;
+    original_ip_info = ip_info;
+
+    err = esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_GET,
+                                 ESP_NETIF_REQUESTED_IP_ADDRESS,
+                                 &lease, sizeof(lease));
+    if (err != ESP_OK) return err;
+    original_lease = lease;
+
+    if (s_config.ap_ip) {
+        ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(s_config.ap_ip, &ip_info.ip), TAG,
+                            "Invalid AP IP");
+        ip_info.gw = ip_info.ip;
+    }
+    if (s_config.ap_netmask) {
+        ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(s_config.ap_netmask, &ip_info.netmask), TAG,
+                            "Invalid AP netmask");
+    }
+    if (s_config.dhcp_start) {
+        esp_ip4_addr_t start = {0};
+        ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(s_config.dhcp_start, &start), TAG,
+                            "Invalid DHCP start");
+        lease.start_ip.addr = start.addr;
+    }
+    if (s_config.dhcp_end) {
+        esp_ip4_addr_t end = {0};
+        ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(s_config.dhcp_end, &end), TAG,
+                            "Invalid DHCP end");
+        lease.end_ip.addr = end.addr;
+    }
+    lease.enable = true;
+
+    const uint32_t host_mask = lwip_ntohl(ip_info.netmask.addr);
+    const uint32_t host_ip = lwip_ntohl(ip_info.ip.addr);
+    const uint32_t host_start = lwip_ntohl(lease.start_ip.addr);
+    const uint32_t host_end = lwip_ntohl(lease.end_ip.addr);
+    if (host_start > host_end ||
+        (host_start & host_mask) != (host_ip & host_mask) ||
+        (host_end & host_mask) != (host_ip & host_mask)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_RETURN_ON_ERROR(esp_netif_dhcps_get_status(s_ap_netif, &dhcp_status), TAG,
+                        "Failed to query AP DHCP status");
+    if (dhcp_status == ESP_NETIF_DHCP_STARTED) {
+        ESP_RETURN_ON_ERROR(esp_netif_dhcps_stop(s_ap_netif), TAG,
+                            "Failed to stop AP DHCP server");
+    }
+    err = esp_netif_set_ip_info(s_ap_netif, &ip_info);
+    if (err == ESP_OK) {
+        err = esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
+                                     ESP_NETIF_REQUESTED_IP_ADDRESS,
+                                     &lease, sizeof(lease));
+    }
+    if (err == ESP_OK) err = esp_netif_dhcps_start(s_ap_netif);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to apply AP network config: %s; restoring defaults",
+                 esp_err_to_name(err));
+        esp_netif_dhcps_stop(s_ap_netif);
+        esp_netif_set_ip_info(s_ap_netif, &original_ip_info);
+        esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
+                               ESP_NETIF_REQUESTED_IP_ADDRESS,
+                               &original_lease, sizeof(original_lease));
+        esp_netif_dhcps_start(s_ap_netif);
+        return err;
+    }
+    refresh_ap_ip_str();
+    return ESP_OK;
+}
+
 static void reset_sta_runtime_state(void)
 {
     strlcpy(s_ip_addr, "0.0.0.0", sizeof(s_ip_addr));
@@ -223,6 +340,13 @@ esp_err_t wifi_manager_validate_config(const wifi_manager_config_t *config)
     if (config->ap_ssid && strlen(config->ap_ssid) > sizeof(((wifi_config_t *)0)->ap.ssid)) return ESP_ERR_INVALID_ARG;
     if (config->ap_ssid_prefix && strlen(config->ap_ssid_prefix) >= sizeof(s_ap_ssid) - 7) return ESP_ERR_INVALID_ARG;
     if (!wifi_manager_ap_behavior_is_valid(config->ap_behavior)) return ESP_ERR_INVALID_ARG;
+    esp_ip4_addr_t parsed = {0};
+    if (parse_optional_ip4(config->ap_ip, &parsed) != ESP_OK ||
+        parse_optional_ip4(config->ap_netmask, &parsed) != ESP_OK ||
+        parse_optional_ip4(config->dhcp_start, &parsed) != ESP_OK ||
+        parse_optional_ip4(config->dhcp_end, &parsed) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
     return ESP_OK;
 }
 
@@ -289,18 +413,44 @@ static void reopen_ap_if_needed(void)
 {
     if (s_mode != WM_STATE_STA_ONLY) return;
     ESP_LOGI(TAG, "Reopening AP after STA disconnect (was closed via close_on_sta)");
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to reopen AP: %s", esp_err_to_name(err));
-        return;
+    esp_err_t err = set_provisioning_ap_enabled(true);
+    if (err != ESP_OK) ESP_LOGW(TAG, "Failed to reopen AP: %s", esp_err_to_name(err));
+}
+
+static esp_err_t set_provisioning_ap_enabled(bool enabled)
+{
+    if (!s_wifi_started || s_mode == WM_STATE_OFF) return ESP_ERR_INVALID_STATE;
+
+    if (enabled) {
+        if (s_mode != WM_STATE_STA_ONLY) return ESP_OK;
+        esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK) return err;
+        apply_ap_config();
+        s_mode = WM_STATE_APSTA;
+        return ESP_OK;
     }
-    apply_ap_config();
-    s_mode = WM_STATE_APSTA;
+
+    if (s_mode == WM_STATE_APSTA && s_connected) {
+        esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (err != ESP_OK) return err;
+        s_mode = WM_STATE_STA_ONLY;
+        return ESP_OK;
+    }
+    return (s_mode == WM_STATE_STA_ONLY) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     (void)arg;
+
+    if (event_base == WIFI_MANAGER_EVENT && event_id == WIFI_MANAGER_EVENT_SET_PROVISIONING_AP) {
+        const bool enabled = event_data && *(const bool *)event_data;
+        esp_err_t err = set_provisioning_ap_enabled(enabled);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Provisioning AP request failed: %s", esp_err_to_name(err));
+        }
+        return;
+    }
 
     if (event_base == WIFI_EVENT) {
         switch (event_id) {
@@ -359,11 +509,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
         if (wifi_manager_close_on_sta() && s_ap_active) {
             ESP_LOGI(TAG, "STA connected, closing AP per ap_behavior=close_on_sta");
-            esp_err_t ap_err = esp_wifi_set_mode(WIFI_MODE_STA);
-            if (ap_err == ESP_OK) {
-                s_ap_active = false;
-                s_mode = WM_STATE_STA_ONLY;
-            } else {
+            esp_err_t ap_err = set_provisioning_ap_enabled(false);
+            if (ap_err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to switch to STA-only mode: %s", esp_err_to_name(ap_err));
             }
         }
@@ -412,6 +559,9 @@ esp_err_t wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_MANAGER_EVENT,
+                                                        WIFI_MANAGER_EVENT_SET_PROVISIONING_AP,
+                                                        &wifi_event_handler, NULL, NULL));
 
     const esp_timer_create_args_t timer_args = { .callback = reconnect_timer_cb, .name = "wifi_reconnect" };
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
@@ -429,12 +579,22 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
     esp_err_t err = configure_sta_mode(config);
     if (err != ESP_OK) return err;
 
+    err = apply_ap_network_config();
+    if (err != ESP_OK) return err;
+
     if (!s_wifi_started) {
         err = esp_wifi_start();
         if (err != ESP_OK) return err;
         s_wifi_started = true;
     }
     return ESP_OK;
+}
+
+esp_err_t wifi_manager_set_provisioning_ap(bool enabled)
+{
+    if (!s_wifi_event_group || !s_wifi_started) return ESP_ERR_INVALID_STATE;
+    return esp_event_post(WIFI_MANAGER_EVENT, WIFI_MANAGER_EVENT_SET_PROVISIONING_AP,
+                          &enabled, sizeof(enabled), portMAX_DELAY);
 }
 
 esp_err_t wifi_manager_apply_sta_config(const wifi_manager_config_t *config)

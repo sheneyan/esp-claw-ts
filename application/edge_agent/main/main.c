@@ -29,6 +29,11 @@
 #include "cap_im_wechat.h"
 #endif
 #include "app_config.h"
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+#include "provision_button.h"
+#include "settings_store.h"
+#include "ts_claw.h"
+#endif
 
 #define APP_ENABLE_MEM_LOG        (0)
 
@@ -63,6 +68,11 @@ static void app_free_runtime_state(void)
 
 static void log_wifi_startup_config(const app_config_t *config)
 {
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+    const char *default_ap_behavior = "close_on_sta";
+#else
+    const char *default_ap_behavior = "keep";
+#endif
     ESP_LOGI(TAG,
              "Wi-Fi startup STA: ssid=%s pwd_len=%u",
              config->wifi_ssid[0] ? config->wifi_ssid : "(empty)",
@@ -72,7 +82,7 @@ static void log_wifi_startup_config(const app_config_t *config)
              "Wi-Fi startup AP: ssid=%s pwd_len=%u behavior=%s",
              config->ap_ssid[0] ? config->ap_ssid : "(auto:mac-suffix)",
              (unsigned)strlen(config->ap_password),
-             config->ap_behavior[0] ? config->ap_behavior : "keep");
+             config->ap_behavior[0] ? config->ap_behavior : default_ap_behavior);
 }
 
 static void on_wifi_state_changed(bool connected, void *user_ctx)
@@ -198,6 +208,23 @@ static esp_err_t main_restart_device(void)
     ESP_RETURN_ON_FALSE(ok == pdPASS, ESP_ERR_NO_MEM, TAG, "Failed to create restart task");
     return ESP_OK;
 }
+
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+static esp_err_t main_factory_reset(void)
+{
+    esp_err_t err = ts_claw_factory_reset();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to reset TS-Claw identity: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = settings_store_erase_all();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to erase application settings: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+#endif
 
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT
 static esp_err_t main_wechat_login_start(const char *account_id, bool force)
@@ -359,13 +386,24 @@ void app_main(void)
 
     log_wifi_startup_config(s_config);
 
-    esp_err_t wifi_err = wifi_manager_start(&(wifi_manager_config_t) {
+    wifi_manager_config_t wifi_config = {
         .sta_ssid = s_config->wifi_ssid,
         .sta_password = s_config->wifi_password,
         .ap_ssid = s_config->ap_ssid[0] ? s_config->ap_ssid : NULL,
         .ap_password = s_config->ap_password[0] ? s_config->ap_password : NULL,
         .ap_behavior = s_config->ap_behavior,
-    });
+    };
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+    wifi_config.ap_behavior = s_config->ap_behavior[0] ? s_config->ap_behavior : "close_on_sta";
+    wifi_config.ap_ip = "192.168.237.1";
+    wifi_config.ap_netmask = "255.255.255.0";
+    wifi_config.dhcp_start = "192.168.237.10";
+    wifi_config.dhcp_end = "192.168.237.50";
+#endif
+    esp_err_t wifi_err = wifi_manager_start(&wifi_config);
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+    ESP_ERROR_CHECK(provision_button_start(main_factory_reset));
+#endif
     if (wifi_err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi start failed: %s", esp_err_to_name(wifi_err));
     } else {
