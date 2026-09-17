@@ -10,6 +10,8 @@ set(_MICROLINK_ORIGINAL_PEER_NVS_SHA256
     "6529d00c8765d83ee5279b35d41d055944111a4b6d8ec1731fd0f630801190d0")
 set(_MICROLINK_ORIGINAL_WG_MGR_SHA256
     "a9cd0e603c0d701a7048e1e6823f90d58b1c2a84719afbe29d724f5bd3b82311")
+set(_MICROLINK_ORIGINAL_PUBLIC_HEADER_SHA256
+    "ead0147b2616242457d1371b89fc7266558b4c7d8816789df263172e33676b7f")
 set(_MICROLINK_PATCHED_STUN_SHA256
     "9f2bf58ce17251401e3613e61cc4507219f19447087874a905732f864b09b316")
 set(_MICROLINK_PATCHED_COORD_SHA256
@@ -19,9 +21,24 @@ set(_MICROLINK_PATCHED_CORE_SHA256
 set(_MICROLINK_PATCHED_PEER_NVS_SHA256
     "7388ac0b2cabf84f91645716fcc443e9ecf8685e07bbdd5a01c24b54eb505fb5")
 set(_MICROLINK_PATCHED_WG_MGR_SHA256
-    "8776a2b7e3a8c6aad4a7cd9cc9672d5653ae7de671d2b045e10ead498adf932e")
+    "a8438817b58ff33e3f80c2ab6f46c4369b2308810b6fd9c53e041a706e6ce2c3")
+set(_MICROLINK_PATCHED_PUBLIC_HEADER_SHA256
+    "b211db6b5b21f88101a0c91bad2cd39be41676b46a04d9ed10f7a91d9b37f475")
 
 function(_microlink_assert_upstream_bind_patch source_dir)
+    file(READ "${source_dir}/include/microlink.h" _public_header_source)
+    string(FIND "${_public_header_source}"
+        "struct netif *microlink_get_wg_netif(const microlink_t *ml);"
+        _wg_getter_declaration_offset)
+    string(REGEX MATCHALL "microlink_get_wg_netif"
+        _wg_getter_declarations "${_public_header_source}")
+    list(LENGTH _wg_getter_declarations _wg_getter_declaration_count)
+    if(_wg_getter_declaration_offset EQUAL -1 OR
+       NOT _wg_getter_declaration_count EQUAL 1)
+        message(FATAL_ERROR
+            "MicroLink patched copy must expose exactly one public WG netif getter: ${source_dir}")
+    endif()
+
     file(READ "${source_dir}/src/ml_stun.c" _stun_source)
     string(REGEX MATCHALL
         "ml_bind_sock_to_upstream\\(ml, ml->stun_sock6?\\)"
@@ -71,6 +88,30 @@ function(_microlink_assert_upstream_bind_patch source_dir)
         message(FATAL_ERROR
             "MicroLink patched copy must use one release store for the upstream netif write: ${source_dir}")
     endif()
+    string(REGEX MATCHALL
+        "__atomic_load_n\\(&ml->wg_netif, __ATOMIC_ACQUIRE\\)"
+        _wg_netif_atomic_loads
+        "${_wg_mgr_source}"
+    )
+    list(LENGTH _wg_netif_atomic_loads _wg_netif_atomic_load_count)
+    string(REGEX MATCHALL
+        "__atomic_store_n\\(&ml->wg_netif, [^;]+, __ATOMIC_RELEASE\\)"
+        _wg_netif_atomic_stores
+        "${_wg_mgr_source}"
+    )
+    list(LENGTH _wg_netif_atomic_stores _wg_netif_atomic_store_count)
+    string(FIND "${_wg_mgr_source}"
+        "__atomic_store_n(&ml->wg_netif, (void *)netif, __ATOMIC_RELEASE)"
+        _wg_publish_offset)
+    string(FIND "${_wg_mgr_source}"
+        "__atomic_store_n(&ml->wg_netif, NULL, __ATOMIC_RELEASE)"
+        _wg_clear_offset)
+    if(NOT _wg_netif_atomic_load_count EQUAL 2 OR
+       NOT _wg_netif_atomic_store_count EQUAL 2 OR
+       _wg_publish_offset EQUAL -1 OR _wg_clear_offset LESS _wg_publish_offset)
+        message(FATAL_ERROR
+            "MicroLink patched copy must acquire-load the WG netif getter/teardown and release-store publish/clear: ${source_dir}")
+    endif()
 
     file(READ "${source_dir}/src/microlink.c" _core_source)
     foreach(_reset_marker IN ITEMS
@@ -116,7 +157,8 @@ function(_microlink_assert_upstream_bind_patch source_dir)
 endfunction()
 
 function(microlink_apply_upstream_bind_patch source_dir)
-    if(NOT EXISTS "${source_dir}/src/ml_stun.c" OR
+    if(NOT EXISTS "${source_dir}/include/microlink.h" OR
+       NOT EXISTS "${source_dir}/src/ml_stun.c" OR
        NOT EXISTS "${source_dir}/src/ml_coord.c" OR
        NOT EXISTS "${source_dir}/src/microlink.c" OR
        NOT EXISTS "${source_dir}/src/ml_peer_nvs.c" OR
@@ -139,7 +181,9 @@ function(microlink_apply_upstream_bind_patch source_dir)
     file(SHA256 "${source_dir}/src/microlink.c" _core_sha256)
     file(SHA256 "${source_dir}/src/ml_peer_nvs.c" _peer_nvs_sha256)
     file(SHA256 "${source_dir}/src/ml_wg_mgr.c" _wg_mgr_sha256)
-    if("${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" AND
+    file(SHA256 "${source_dir}/include/microlink.h" _public_header_sha256)
+    if("${_public_header_sha256}" STREQUAL "${_MICROLINK_PATCHED_PUBLIC_HEADER_SHA256}" AND
+       "${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" AND
        "${_coord_sha256}" STREQUAL "${_MICROLINK_PATCHED_COORD_SHA256}" AND
        "${_core_sha256}" STREQUAL "${_MICROLINK_PATCHED_CORE_SHA256}" AND
        "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_PATCHED_PEER_NVS_SHA256}" AND
@@ -148,13 +192,15 @@ function(microlink_apply_upstream_bind_patch source_dir)
         message(STATUS "MicroLink upstream-bind patch already applied and verified at ${source_dir}")
         return()
     endif()
-    if(NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_STUN_SHA256}" OR
+    if(NOT "${_public_header_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_PUBLIC_HEADER_SHA256}" OR
+       NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_STUN_SHA256}" OR
        NOT "${_coord_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_COORD_SHA256}" OR
        NOT "${_core_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_CORE_SHA256}" OR
        NOT "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_PEER_NVS_SHA256}" OR
        NOT "${_wg_mgr_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_WG_MGR_SHA256}")
         message(FATAL_ERROR
             "MicroLink sources are neither the exact original nor patched revisions at ${source_dir}.\n"
+            "Actual include/microlink.h SHA256: ${_public_header_sha256}\n"
             "Actual ml_stun.c SHA256: ${_stun_sha256}\n"
             "Actual ml_coord.c SHA256: ${_coord_sha256}\n"
             "Actual microlink.c SHA256: ${_core_sha256}\n"
@@ -182,13 +228,16 @@ function(microlink_apply_upstream_bind_patch source_dir)
     file(SHA256 "${source_dir}/src/microlink.c" _core_sha256)
     file(SHA256 "${source_dir}/src/ml_peer_nvs.c" _peer_nvs_sha256)
     file(SHA256 "${source_dir}/src/ml_wg_mgr.c" _wg_mgr_sha256)
-    if(NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" OR
+    file(SHA256 "${source_dir}/include/microlink.h" _public_header_sha256)
+    if(NOT "${_public_header_sha256}" STREQUAL "${_MICROLINK_PATCHED_PUBLIC_HEADER_SHA256}" OR
+       NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" OR
        NOT "${_coord_sha256}" STREQUAL "${_MICROLINK_PATCHED_COORD_SHA256}" OR
        NOT "${_core_sha256}" STREQUAL "${_MICROLINK_PATCHED_CORE_SHA256}" OR
        NOT "${_peer_nvs_sha256}" STREQUAL "${_MICROLINK_PATCHED_PEER_NVS_SHA256}" OR
        NOT "${_wg_mgr_sha256}" STREQUAL "${_MICROLINK_PATCHED_WG_MGR_SHA256}")
         message(FATAL_ERROR
             "MicroLink patch output does not match the exact expected patched revisions at ${source_dir}.\n"
+            "Actual include/microlink.h SHA256: ${_public_header_sha256}\n"
             "Actual ml_stun.c SHA256: ${_stun_sha256}\n"
             "Actual ml_coord.c SHA256: ${_coord_sha256}\n"
             "Actual microlink.c SHA256: ${_core_sha256}\n"

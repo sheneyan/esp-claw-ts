@@ -11,7 +11,9 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "lwip/ip_addr.h"
 #include "lwip/netif.h"
+#include "ping/ping_sock.h"
 #include "ts_claw_route_hook.h"
 
 #define TS_CLAW_AUTH_KEY_LEN 320
@@ -26,6 +28,9 @@ enum {
     TS_CLAW_PIN_TIMEOUT_MS = 10000,
     TS_CLAW_ERROR_RESTART_MS = 30000,
     TS_CLAW_RESOURCE_SAMPLE_MS = 10000,
+    TS_CLAW_EXIT_PROBE_INTERVAL_MS = 5000,
+    TS_CLAW_EXIT_PROBE_TIMEOUT_MS = 5000,
+    TS_CLAW_EXIT_PROBE_DATA_SIZE = 16,
 };
 
 typedef enum {
@@ -52,6 +57,9 @@ typedef struct {
     SemaphoreHandle_t lock;
     TaskHandle_t worker;
     microlink_t *ml;
+    esp_ping_handle_t exit_ping;
+    uint32_t exit_ping_target;
+    uint64_t exit_ping_next_attempt_ms;
     ts_resource_guard_t resource_guard;
     ts_exit_policy_t exit_policy;
     uint64_t next_resource_sample_ms;
@@ -90,6 +98,71 @@ static void set_last_error(const char *message)
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     copy_string(s_ts.status.last_error, sizeof(s_ts.status.last_error), message);
     xSemaphoreGive(s_ts.lock);
+}
+
+static void update_exit_status_locked(void)
+{
+    s_ts.status.exit_state = s_ts.exit_policy.state;
+    copy_string(s_ts.status.egress, sizeof(s_ts.status.egress),
+                !s_ts.wifi_has_ip ? "unavailable" :
+                ts_exit_policy_routes_public(&s_ts.exit_policy) ? "exit" : "sta");
+}
+
+static void set_exit_usable(bool usable)
+{
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    ts_exit_policy_set_tunnel(&s_ts.exit_policy, usable);
+    update_exit_status_locked();
+    ts_claw_route_hook_set_exit_active(
+        ts_exit_policy_routes_public(&s_ts.exit_policy));
+    xSemaphoreGive(s_ts.lock);
+}
+
+static void record_exit_probe(esp_ping_handle_t handle, bool success)
+{
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    if (handle != s_ts.exit_ping) {
+        xSemaphoreGive(s_ts.lock);
+        return;
+    }
+    ts_exit_policy_on_probe(&s_ts.exit_policy, success);
+    update_exit_status_locked();
+    ts_claw_route_hook_set_exit_active(
+        ts_exit_policy_routes_public(&s_ts.exit_policy));
+    xSemaphoreGive(s_ts.lock);
+}
+
+static void exit_probe_on_success(esp_ping_handle_t handle, void *args)
+{
+    (void)args;
+    record_exit_probe(handle, true);
+}
+
+static void exit_probe_on_timeout(esp_ping_handle_t handle, void *args)
+{
+    (void)args;
+    record_exit_probe(handle, false);
+}
+
+static void exit_probe_on_end(esp_ping_handle_t handle, void *args)
+{
+    (void)handle;
+    (void)args;
+}
+
+static void worker_stop_exit_probe(void)
+{
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    esp_ping_handle_t ping = s_ts.exit_ping;
+    s_ts.exit_ping = NULL;
+    s_ts.exit_ping_target = 0u;
+    s_ts.exit_ping_next_attempt_ms = 0u;
+    xSemaphoreGive(s_ts.lock);
+
+    if (ping != NULL) {
+        (void)esp_ping_stop(ping);
+        (void)esp_ping_delete_session(ping);
+    }
 }
 
 static void set_disconnected_status(void)
@@ -143,11 +216,12 @@ static void microlink_state_changed(microlink_t *ml,
     } else {
         s_ts.status.direct_path_available = false;
     }
-    ts_exit_policy_set_tunnel(&s_ts.exit_policy, connected);
-    s_ts.status.exit_state = s_ts.exit_policy.state;
     xSemaphoreGive(s_ts.lock);
 
     ts_claw_route_hook_set_tunnel_available(connected);
+    if (!connected) {
+        set_exit_usable(false);
+    }
 }
 
 static void worker_destroy_microlink(void)
@@ -157,6 +231,10 @@ static void worker_destroy_microlink(void)
     }
 
     microlink_t *ml = s_ts.ml;
+    ts_claw_route_hook_set_netifs(worker_lwip_netif_snapshot(), NULL);
+    worker_stop_exit_probe();
+    set_exit_usable(false);
+    ts_claw_route_hook_set_tunnel_available(false);
     (void)microlink_pin_wg_output_netif(ml, NULL);
     esp_err_t err = microlink_stop(ml);
     if (err != ESP_OK) {
@@ -169,10 +247,6 @@ static void worker_destroy_microlink(void)
     s_ts.upstream_pinned = false;
     s_ts.error_since_ms = 0u;
     ts_claw_route_hook_reset();
-    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    ts_exit_policy_set_tunnel(&s_ts.exit_policy, false);
-    s_ts.status.exit_state = s_ts.exit_policy.state;
-    xSemaphoreGive(s_ts.lock);
     set_disconnected_status();
 }
 
@@ -182,6 +256,7 @@ static esp_err_t worker_start_microlink(void)
     if (!s_ts.config.enabled || upstream == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+    ts_claw_route_hook_set_netifs(upstream, NULL);
 
     const microlink_config_t config = {
         .auth_key = s_ts.config.auth_key,
@@ -265,6 +340,9 @@ static void worker_restart_microlink(void)
 static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
 {
     if (!has_ip) {
+        ts_claw_route_hook_set_netifs(NULL, NULL);
+        worker_stop_exit_probe();
+        set_exit_usable(false);
         if (s_ts.ml != NULL) {
             (void)microlink_pin_wg_output_netif(s_ts.ml, NULL);
         }
@@ -272,10 +350,6 @@ static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
         s_ts.pin_next_attempt_ms = 0u;
         s_ts.pin_deadline_ms = 0u;
         s_ts.next_start_retry_ms = 0u;
-        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-        ts_exit_policy_set_tunnel(&s_ts.exit_policy, false);
-        s_ts.status.exit_state = s_ts.exit_policy.state;
-        xSemaphoreGive(s_ts.lock);
         ts_claw_route_hook_set_upstream_pinned(false);
         ts_claw_route_hook_set_tunnel_available(false);
         set_disconnected_status();
@@ -295,6 +369,7 @@ static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
         set_last_error("missing lwIP STA netif");
         return;
     }
+    ts_claw_route_hook_set_netifs(upstream, microlink_get_wg_netif(s_ts.ml));
 
     const uint64_t current_ms = now_ms();
     esp_err_t err = microlink_pin_wg_output_netif(s_ts.ml, upstream);
@@ -420,10 +495,104 @@ static void worker_refresh_status(void)
     s_ts.status.vpn_ip = diag.vpn_ip;
     s_ts.status.peer_count = diag.peer_count > 0 ? diag.peer_count : 0;
     s_ts.status.peer_online = diag.peer_online > 0 ? diag.peer_online : 0;
-    s_ts.status.exit_state = s_ts.exit_policy.state;
-    copy_string(s_ts.status.egress, sizeof(s_ts.status.egress),
-                s_ts.wifi_has_ip ? "sta" : "unavailable");
+    update_exit_status_locked();
     xSemaphoreGive(s_ts.lock);
+}
+
+static bool worker_selected_exit_online(void)
+{
+    if (s_ts.ml == NULL || s_ts.config.exit_node_ip == 0u) {
+        return false;
+    }
+
+    const int peers = microlink_get_peer_count(s_ts.ml);
+    for (int i = 0; i < peers; ++i) {
+        microlink_peer_info_t peer = {0};
+        if (microlink_get_peer_info(s_ts.ml, i, &peer) == ESP_OK &&
+            peer.vpn_ip == s_ts.config.exit_node_ip) {
+            return peer.online;
+        }
+    }
+    return false;
+}
+
+static esp_err_t worker_start_exit_probe(struct netif *wg_netif, uint64_t current_ms)
+{
+    esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
+    config.count = ESP_PING_COUNT_INFINITE;
+    config.interval_ms = TS_CLAW_EXIT_PROBE_INTERVAL_MS;
+    config.timeout_ms = TS_CLAW_EXIT_PROBE_TIMEOUT_MS;
+    config.data_size = TS_CLAW_EXIT_PROBE_DATA_SIZE;
+    config.interface = netif_get_index(wg_netif);
+    IP_SET_TYPE_VAL(config.target_addr, IPADDR_TYPE_V4);
+    ip4_addr_set_u32(ip_2_ip4(&config.target_addr),
+                     lwip_htonl(s_ts.config.exit_node_ip));
+
+    const esp_ping_callbacks_t callbacks = {
+        .on_ping_success = exit_probe_on_success,
+        .on_ping_timeout = exit_probe_on_timeout,
+        .on_ping_end = exit_probe_on_end,
+        .cb_args = NULL,
+    };
+    esp_ping_handle_t ping = NULL;
+    esp_err_t err = esp_ping_new_session(&config, &callbacks, &ping);
+    if (err == ESP_OK) {
+        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+        s_ts.exit_ping = ping;
+        s_ts.exit_ping_target = s_ts.config.exit_node_ip;
+        s_ts.exit_ping_next_attempt_ms = 0u;
+        xSemaphoreGive(s_ts.lock);
+        err = esp_ping_start(ping);
+    }
+    if (err != ESP_OK) {
+        if (ping != NULL) {
+            xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+            if (s_ts.exit_ping == ping) {
+                s_ts.exit_ping = NULL;
+                s_ts.exit_ping_target = 0u;
+            }
+            xSemaphoreGive(s_ts.lock);
+            (void)esp_ping_delete_session(ping);
+        }
+        s_ts.exit_ping_next_attempt_ms = current_ms + TS_CLAW_EXIT_PROBE_INTERVAL_MS;
+        set_last_error("exit probe start failed");
+        return err;
+    }
+    return ESP_OK;
+}
+
+static void worker_manage_exit_probe(uint64_t current_ms)
+{
+    struct netif *sta_netif = worker_lwip_netif_snapshot();
+    struct netif *wg_netif = s_ts.ml != NULL ? microlink_get_wg_netif(s_ts.ml) : NULL;
+    const bool tunnel_available = s_ts.ml != NULL && sta_netif != NULL &&
+                                  microlink_is_connected(s_ts.ml) && wg_netif != NULL;
+
+    ts_claw_route_hook_set_netifs(sta_netif, wg_netif);
+    ts_claw_route_hook_set_tunnel_available(tunnel_available);
+
+    const bool ready = s_ts.config.exit_node_ip != 0u && tunnel_available &&
+                       s_ts.upstream_pinned && worker_selected_exit_online();
+    if (!ready) {
+        worker_stop_exit_probe();
+        set_exit_usable(false);
+        return;
+    }
+
+    set_exit_usable(true);
+    if (s_ts.exit_ping != NULL &&
+        s_ts.exit_ping_target == s_ts.config.exit_node_ip) {
+        return;
+    }
+    if (s_ts.exit_ping != NULL) {
+        worker_stop_exit_probe();
+    }
+    if (current_ms < s_ts.exit_ping_next_attempt_ms) {
+        return;
+    }
+    if (worker_start_exit_probe(wg_netif, current_ms) != ESP_OK) {
+        set_exit_usable(false);
+    }
 }
 
 static void worker_check_error(uint64_t current_ms)
@@ -553,6 +722,7 @@ static void ts_claw_worker(void *arg)
         const uint64_t current_ms = now_ms();
         worker_try_start_retry(current_ms);
         worker_try_pin_upstream(current_ms);
+        worker_manage_exit_probe(current_ms);
         worker_refresh_status();
         worker_check_error(current_ms);
         worker_sample_resources(current_ms);

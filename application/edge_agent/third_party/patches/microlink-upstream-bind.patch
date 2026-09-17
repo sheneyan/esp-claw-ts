@@ -1,3 +1,15 @@
+diff --git a/include/microlink.h b/include/microlink.h
+--- a/include/microlink.h
++++ b/include/microlink.h
+@@ -231,0 +232,8 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream);
++/**
++ * @brief Borrow the current WireGuard lwIP netif.
++ *
++ * The returned pointer remains owned by MicroLink. Callers must stop using
++ * it before microlink_stop() or microlink_destroy().
++ */
++struct netif *microlink_get_wg_netif(const microlink_t *ml);
++
 diff --git a/src/microlink.c b/src/microlink.c
 --- a/src/microlink.c
 +++ b/src/microlink.c
@@ -118,3 +130,19 @@ diff --git a/src/ml_wg_mgr.c b/src/ml_wg_mgr.c
 @@ -230 +230 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
 -    if (ml) ml->upstream_netif = (void *)upstream;
 +    if (ml) __atomic_store_n(&ml->upstream_netif, (void *)upstream, __ATOMIC_RELEASE);
+@@ -234,0 +235,5 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
++struct netif *microlink_get_wg_netif(const microlink_t *ml)
++{
++    return ml ? (struct netif *)__atomic_load_n(&ml->wg_netif, __ATOMIC_ACQUIRE) : NULL;
++}
++
+@@ -445 +451 @@ static void wg_mgr_task(void *arg) {
+-    ml->wg_netif = netif;
++    __atomic_store_n(&ml->wg_netif, (void *)netif, __ATOMIC_RELEASE);
+@@ -2352,3 +2358,3 @@ static void wg_mgr_task(void *arg) {
+-    if (ml->wg_netif) {
+-        struct netif *netif = (struct netif *)ml->wg_netif;
+-        ml->wg_netif = NULL;
++    struct netif *netif = (struct netif *)__atomic_load_n(&ml->wg_netif, __ATOMIC_ACQUIRE);
++    if (netif) {
++        __atomic_store_n(&ml->wg_netif, NULL, __ATOMIC_RELEASE);

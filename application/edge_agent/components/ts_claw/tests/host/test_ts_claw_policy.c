@@ -55,6 +55,19 @@ static void test_rfc1918_boundaries(void)
     TEST_CHECK(ts_route_classify(0xC0A8FFFFu, true) == TS_ROUTE_STA);
 }
 
+static void test_loopback_and_link_local_stay_on_sta(void)
+{
+    TEST_CHECK(ts_route_classify(0x7EFFFFFFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0x7F000000u, true) == TS_ROUTE_STA);
+    TEST_CHECK(ts_route_classify(0x7FFFFFFFu, true) == TS_ROUTE_STA);
+    TEST_CHECK(ts_route_classify(0x80000000u, true) == TS_ROUTE_WG);
+
+    TEST_CHECK(ts_route_classify(0xA9FDFFFFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xA9FE0000u, true) == TS_ROUTE_STA);
+    TEST_CHECK(ts_route_classify(0xA9FEFFFFu, true) == TS_ROUTE_STA);
+    TEST_CHECK(ts_route_classify(0xA9FF0000u, true) == TS_ROUTE_WG);
+}
+
 static void test_exit_activation_and_fallback_thresholds(void)
 {
     ts_exit_policy_t policy;
@@ -129,6 +142,30 @@ static void test_disabled_and_tunnel_loss(void)
     ts_exit_policy_set_tunnel(&policy, false);
     TEST_CHECK(policy.state == TS_EXIT_FALLBACK);
     TEST_CHECK(!ts_exit_policy_routes_public(&policy));
+    TEST_CHECK(ts_route_classify(0x08080808u,
+                                 ts_exit_policy_routes_public(&policy)) == TS_ROUTE_STA);
+}
+
+static void test_fallback_recovery_requires_three_successes(void)
+{
+    ts_exit_policy_t policy;
+
+    ts_exit_policy_init(&policy, true);
+    ts_exit_policy_set_tunnel(&policy, true);
+    ts_exit_policy_on_probe(&policy, true);
+    ts_exit_policy_on_probe(&policy, true);
+    ts_exit_policy_on_probe(&policy, true);
+    ts_exit_policy_on_probe(&policy, false);
+    ts_exit_policy_on_probe(&policy, false);
+    ts_exit_policy_on_probe(&policy, false);
+    TEST_CHECK(policy.state == TS_EXIT_FALLBACK);
+
+    ts_exit_policy_on_probe(&policy, true);
+    TEST_CHECK(policy.state == TS_EXIT_FALLBACK);
+    ts_exit_policy_on_probe(&policy, true);
+    TEST_CHECK(policy.state == TS_EXIT_FALLBACK);
+    ts_exit_policy_on_probe(&policy, true);
+    TEST_CHECK(policy.state == TS_EXIT_ACTIVE);
 }
 
 static void test_opposite_probe_resets_counters(void)
@@ -251,9 +288,11 @@ int main(void)
     test_route_classification();
     test_cgnat_boundaries();
     test_rfc1918_boundaries();
+    test_loopback_and_link_local_stay_on_sta();
     test_exit_activation_and_fallback_thresholds();
     test_repeated_tunnel_up_preserves_probe_progress();
     test_disabled_and_tunnel_loss();
+    test_fallback_recovery_requires_three_successes();
     test_opposite_probe_resets_counters();
     test_null_policy_is_safe();
     test_resource_guard_thresholds_and_recovery();

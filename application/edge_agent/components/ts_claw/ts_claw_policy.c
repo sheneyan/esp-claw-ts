@@ -99,12 +99,19 @@ bool ts_route_is_private(uint32_t host_order_ip)
            address_matches(host_order_ip, 0xC0A80000u, 0xFFFF0000u);
 }
 
+bool ts_route_is_local_bypass(uint32_t host_order_ip)
+{
+    return ts_route_is_private(host_order_ip) ||
+           address_matches(host_order_ip, 0x7F000000u, 0xFF000000u) ||
+           address_matches(host_order_ip, 0xA9FE0000u, 0xFFFF0000u);
+}
+
 ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)
 {
     if (ts_route_is_cgnat(host_order_ip)) {
         return TS_ROUTE_WG;
     }
-    if (ts_route_is_private(host_order_ip)) {
+    if (ts_route_is_local_bypass(host_order_ip)) {
         return TS_ROUTE_STA;
     }
     return exit_active ? TS_ROUTE_WG : TS_ROUTE_STA;
