@@ -15,7 +15,7 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { SavePanel } from '../components/ui/SavePanel';
 import { Switch } from '../components/ui/Switch';
 import { t } from '../i18n';
-import { appConfig, patchConfigLocal } from '../state/config';
+import { appConfig, isGroupLoaded, patchConfigLocal } from '../state/config';
 import { createConfigTab } from '../state/configTab';
 import { pushToast } from '../state/toast';
 
@@ -150,6 +150,8 @@ export const TailscalePage: Component = () => {
   };
 
   const handleSave = async () => {
+    if (!isGroupLoaded('tailscale')) return;
+
     const maxPeers = tab.form.tailscale_max_peers.trim();
     if (!/^[1-9]\d*$/.test(maxPeers) || Number(maxPeers) > 64) {
       const message = t('tailscaleMaxPeersValidation') as string;
@@ -221,9 +223,11 @@ export const TailscalePage: Component = () => {
         </StaticConfigBlock>
         <StaticConfigBlock title={t('tailscaleSectionSettings') as string}>
           <Show
-            when={!tab.loading()}
+            when={isGroupLoaded('tailscale')}
             fallback={
-              <div class="py-3 text-sm text-[var(--color-text-muted)]">{t('statusLoading')}</div>
+              <Show when={tab.loading()}>
+                <div class="py-3 text-sm text-[var(--color-text-muted)]">{t('statusLoading')}</div>
+              </Show>
             }
           >
             <div class="grid gap-3 pt-2 sm:grid-cols-2">
@@ -295,16 +299,18 @@ export const TailscalePage: Component = () => {
           </Show>
         </StaticConfigBlock>
       </div>
-      <SavePanel
-        dirty={tab.dirty()}
-        saving={tab.saving()}
-        onSave={() => handleSave().catch(() => undefined)}
-        onDiscard={() => {
-          setValidationError(null);
-          tab.discard();
-        }}
-        note={t('restartHint') as string}
-      />
+      <Show when={isGroupLoaded('tailscale')}>
+        <SavePanel
+          dirty={tab.dirty()}
+          saving={tab.saving()}
+          onSave={() => handleSave().catch(() => undefined)}
+          onDiscard={() => {
+            setValidationError(null);
+            tab.discard();
+          }}
+          note={t('restartHint') as string}
+        />
+      </Show>
     </TabShell>
   );
 };
