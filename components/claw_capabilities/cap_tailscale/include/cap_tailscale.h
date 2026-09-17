@@ -101,6 +101,12 @@ typedef struct {
     void *ctx;
 } cap_tailscale_provider_t;
 
+/**
+ * Install, replace, or clear the copied provider during single-threaded
+ * initialization. Once cap_tailscale_register_group() succeeds (including an
+ * idempotent existing-group lookup), this function returns ESP_ERR_INVALID_STATE
+ * and leaves the installed provider unchanged.
+ */
 esp_err_t cap_tailscale_set_provider(const cap_tailscale_provider_t *provider);
 esp_err_t cap_tailscale_register_group(void);
 

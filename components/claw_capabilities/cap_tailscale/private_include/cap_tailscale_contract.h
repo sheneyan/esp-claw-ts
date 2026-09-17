@@ -73,6 +73,15 @@ esp_err_t cap_tailscale_render_exit_nodes_json(const cap_tailscale_exit_node_t *
 esp_err_t cap_tailscale_render_mutation_json(const cap_tailscale_mutation_result_t *result,
                                              char *output,
                                              size_t output_size);
+esp_err_t cap_tailscale_render_error_json(const char *error,
+                                          const char *message,
+                                          char *output,
+                                          size_t output_size);
+
+#ifdef CAP_TAILSCALE_HOST_TEST
+void cap_tailscale_test_reset(void);
+void cap_tailscale_test_fail_allocations_after(int successful_allocations);
+#endif
 
 #ifdef __cplusplus
 }

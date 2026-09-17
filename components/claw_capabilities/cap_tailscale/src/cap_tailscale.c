@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -15,6 +16,24 @@
 
 static cap_tailscale_provider_t s_provider;
 static bool s_provider_installed;
+static bool s_provider_frozen;
+
+#ifdef CAP_TAILSCALE_HOST_TEST
+static int s_successful_allocations_before_failure = -1;
+#endif
+
+static void *cap_tailscale_calloc(size_t count, size_t size)
+{
+#ifdef CAP_TAILSCALE_HOST_TEST
+    if (s_successful_allocations_before_failure == 0) {
+        return NULL;
+    }
+    if (s_successful_allocations_before_failure > 0) {
+        --s_successful_allocations_before_failure;
+    }
+#endif
+    return calloc(count, size);
+}
 
 static void cap_tailscale_copy_text(char *destination, size_t destination_size, const char *source)
 {
@@ -22,6 +41,20 @@ static void cap_tailscale_copy_text(char *destination, size_t destination_size, 
         return;
     }
     snprintf(destination, destination_size, "%s", source ? source : "");
+}
+
+static void cap_tailscale_write_compact_error(char *output, size_t output_size)
+{
+    static const char compact_error[] = "{\"ok\":false}";
+
+    if (output == NULL || output_size == 0) {
+        return;
+    }
+    if (output_size < sizeof(compact_error)) {
+        output[0] = '\0';
+        return;
+    }
+    memcpy(output, compact_error, sizeof(compact_error));
 }
 
 static void cap_tailscale_write_error(char *output,
@@ -32,11 +65,9 @@ static void cap_tailscale_write_error(char *output,
     if (output == NULL || output_size == 0) {
         return;
     }
-    snprintf(output,
-             output_size,
-             "{\"ok\":false,\"error\":\"%s\",\"message\":\"%s\"}",
-             error,
-             message);
+    if (cap_tailscale_render_error_json(error, message, output, output_size) != ESP_OK) {
+        cap_tailscale_write_compact_error(output, output_size);
+    }
 }
 
 static void cap_tailscale_write_mutation_error(char *output,
@@ -44,28 +75,53 @@ static void cap_tailscale_write_mutation_error(char *output,
                                                const char *error,
                                                const char *message)
 {
-    cap_tailscale_mutation_result_t result = {
-        .ok = false,
-    };
+    cap_tailscale_mutation_result_t *result;
 
-    cap_tailscale_copy_text(result.error, sizeof(result.error), error);
-    cap_tailscale_copy_text(result.message, sizeof(result.message), message);
-    cap_tailscale_copy_text(result.exit_state, sizeof(result.exit_state), "unchanged");
-    cap_tailscale_copy_text(result.egress, sizeof(result.egress), "unknown");
-    if (cap_tailscale_render_mutation_json(&result, output, output_size) != ESP_OK &&
-        output != NULL && output_size != 0) {
-        output[0] = '\0';
+    result = cap_tailscale_calloc(1, sizeof(*result));
+    if (result == NULL) {
+        cap_tailscale_write_error(output, output_size, error, message);
+        return;
     }
+    result->ok = false;
+    cap_tailscale_copy_text(result->error, sizeof(result->error), error);
+    cap_tailscale_copy_text(result->message, sizeof(result->message), message);
+    cap_tailscale_copy_text(result->exit_state, sizeof(result->exit_state), "unchanged");
+    cap_tailscale_copy_text(result->egress, sizeof(result->egress), "unknown");
+    if (cap_tailscale_render_mutation_json(result, output, output_size) != ESP_OK) {
+        cap_tailscale_write_compact_error(output, output_size);
+    }
+    free(result);
 }
 
 static esp_err_t cap_tailscale_parse_object(const char *input_json, cJSON **out_root)
 {
     cJSON *root;
+    const char *parse_end = NULL;
+    size_t index;
+    size_t input_length;
 
     if (input_json == NULL || out_root == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    root = cJSON_Parse(input_json);
+    input_length = strlen(input_json);
+    for (index = 0; index < input_length; ++index) {
+        if (input_json[index] != '\\') {
+            continue;
+        }
+        if (index + 1 >= input_length) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (input_json[index + 1] == 'u' && index + 5 >= input_length) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (input_json[index + 1] == 'u' && input_json[index + 2] == '0' &&
+            input_json[index + 3] == '0' && input_json[index + 4] == '0' &&
+            input_json[index + 5] == '0') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        ++index;
+    }
+    root = cJSON_ParseWithOpts(input_json, &parse_end, 1);
     if (root == NULL || !cJSON_IsObject(root)) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_ARG;
@@ -98,6 +154,19 @@ static size_t cap_tailscale_unknown_field_count(const cJSON *root,
     return unknown_count;
 }
 
+static size_t cap_tailscale_field_count(const cJSON *root, const char *field_name)
+{
+    const cJSON *field;
+    size_t count = 0;
+
+    cJSON_ArrayForEach(field, root) {
+        if (field->string != NULL && strcmp(field->string, field_name) == 0) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 static esp_err_t cap_tailscale_require_confirmation(const cJSON *root,
                                                     size_t unexpected_field_count)
 {
@@ -107,7 +176,7 @@ static esp_err_t cap_tailscale_require_confirmation(const cJSON *root,
                                                                   cJSON_IsTrue(confirmed),
                                                                   unexpected_field_count);
 
-    if (unexpected_field_count != 0) {
+    if (unexpected_field_count != 0 || cap_tailscale_field_count(root, "user_confirmed") > 1) {
         return ESP_ERR_INVALID_ARG;
     }
     return err == ESP_OK ? ESP_OK : ESP_ERR_INVALID_STATE;
@@ -119,7 +188,7 @@ static esp_err_t cap_tailscale_read_status_execute(const char *input_json,
                                                     size_t output_size)
 {
     cJSON *root = NULL;
-    cap_tailscale_status_t status = {0};
+    cap_tailscale_status_t *status;
     esp_err_t err;
 
     (void)ctx;
@@ -137,13 +206,21 @@ static esp_err_t cap_tailscale_read_status_execute(const char *input_json,
         return ESP_ERR_INVALID_STATE;
     }
 
-    err = s_provider.get_status(&status, s_provider.ctx);
+    status = cap_tailscale_calloc(1, sizeof(*status));
+    if (status == NULL) {
+        cap_tailscale_write_error(output, output_size, "out_of_memory",
+                                  "Unable to allocate Tailscale status.");
+        return ESP_ERR_NO_MEM;
+    }
+    err = s_provider.get_status(status, s_provider.ctx);
     if (err != ESP_OK) {
+        free(status);
         cap_tailscale_write_error(output, output_size, "status_unavailable",
                                   "Unable to read Tailscale status.");
         return err;
     }
-    err = cap_tailscale_render_status_json(&status, output, output_size);
+    err = cap_tailscale_render_status_json(status, output, output_size);
+    free(status);
     if (err != ESP_OK) {
         cap_tailscale_write_error(output, output_size, "output_too_small",
                                   "Unable to render Tailscale status.");
@@ -157,7 +234,7 @@ static esp_err_t cap_tailscale_list_exit_nodes_execute(const char *input_json,
                                                         size_t output_size)
 {
     cJSON *root = NULL;
-    cap_tailscale_exit_node_t nodes[CAP_TAILSCALE_MAX_EXIT_NODES] = {0};
+    cap_tailscale_exit_node_t *nodes;
     int count;
     esp_err_t err;
 
@@ -176,13 +253,21 @@ static esp_err_t cap_tailscale_list_exit_nodes_execute(const char *input_json,
         return ESP_ERR_INVALID_STATE;
     }
 
+    nodes = cap_tailscale_calloc(CAP_TAILSCALE_MAX_EXIT_NODES, sizeof(*nodes));
+    if (nodes == NULL) {
+        cap_tailscale_write_error(output, output_size, "out_of_memory",
+                                  "Unable to allocate Exit Nodes.");
+        return ESP_ERR_NO_MEM;
+    }
     count = s_provider.list_exit_nodes(nodes, CAP_TAILSCALE_MAX_EXIT_NODES, s_provider.ctx);
     if (count < 0) {
+        free(nodes);
         cap_tailscale_write_error(output, output_size, "exit_nodes_unavailable",
                                   "Unable to list Exit Nodes.");
         return ESP_FAIL;
     }
     err = cap_tailscale_render_exit_nodes_json(nodes, (size_t)count, output, output_size);
+    free(nodes);
     if (err != ESP_OK) {
         cap_tailscale_write_error(output, output_size, "output_too_small",
                                   "Unable to render Exit Nodes.");
@@ -209,6 +294,10 @@ static esp_err_t cap_tailscale_parse_set_request(const char *input_json, char *s
         cJSON_Delete(root);
         return err;
     }
+    if (cap_tailscale_field_count(root, "node") != 1) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
     node = cJSON_GetObjectItemCaseSensitive(root, "node");
     if (!cJSON_IsString(node) || node->valuestring == NULL ||
         strlen(node->valuestring) > CAP_TAILSCALE_HOSTNAME_LEN - 1) {
@@ -226,7 +315,7 @@ static esp_err_t cap_tailscale_set_exit_node_execute(const char *input_json,
                                                       size_t output_size)
 {
     char selector[CAP_TAILSCALE_HOSTNAME_LEN];
-    cap_tailscale_mutation_result_t result = {0};
+    cap_tailscale_mutation_result_t *result;
     esp_err_t err;
 
     (void)ctx;
@@ -244,13 +333,21 @@ static esp_err_t cap_tailscale_set_exit_node_execute(const char *input_json,
                                            "Tailscale service is unavailable.");
         return ESP_ERR_INVALID_STATE;
     }
-    err = s_provider.set_exit_node(selector, &result, s_provider.ctx);
+    result = cap_tailscale_calloc(1, sizeof(*result));
+    if (result == NULL) {
+        cap_tailscale_write_mutation_error(output, output_size, "out_of_memory",
+                                           "Unable to allocate the Exit Node result.");
+        return ESP_ERR_NO_MEM;
+    }
+    err = s_provider.set_exit_node(selector, result, s_provider.ctx);
     if (err != ESP_OK) {
+        free(result);
         cap_tailscale_write_mutation_error(output, output_size, "set_exit_node_failed",
                                            "Unable to change the Exit Node.");
         return err;
     }
-    err = cap_tailscale_render_mutation_json(&result, output, output_size);
+    err = cap_tailscale_render_mutation_json(result, output, output_size);
+    free(result);
     if (err != ESP_OK) {
         cap_tailscale_write_mutation_error(output, output_size, "output_too_small",
                                            "Unable to render the Exit Node result.");
@@ -281,7 +378,7 @@ static esp_err_t cap_tailscale_clear_exit_node_execute(const char *input_json,
                                                         char *output,
                                                         size_t output_size)
 {
-    cap_tailscale_mutation_result_t result = {0};
+    cap_tailscale_mutation_result_t *result;
     esp_err_t err;
 
     (void)ctx;
@@ -299,13 +396,21 @@ static esp_err_t cap_tailscale_clear_exit_node_execute(const char *input_json,
                                            "Tailscale service is unavailable.");
         return ESP_ERR_INVALID_STATE;
     }
-    err = s_provider.clear_exit_node(&result, s_provider.ctx);
+    result = cap_tailscale_calloc(1, sizeof(*result));
+    if (result == NULL) {
+        cap_tailscale_write_mutation_error(output, output_size, "out_of_memory",
+                                           "Unable to allocate the Exit Node result.");
+        return ESP_ERR_NO_MEM;
+    }
+    err = s_provider.clear_exit_node(result, s_provider.ctx);
     if (err != ESP_OK) {
+        free(result);
         cap_tailscale_write_mutation_error(output, output_size, "clear_exit_node_failed",
                                            "Unable to clear the Exit Node.");
         return err;
     }
-    err = cap_tailscale_render_mutation_json(&result, output, output_size);
+    err = cap_tailscale_render_mutation_json(result, output, output_size);
+    free(result);
     if (err != ESP_OK) {
         cap_tailscale_write_mutation_error(output, output_size, "output_too_small",
                                            "Unable to render the Exit Node result.");
@@ -318,10 +423,8 @@ static esp_err_t cap_tailscale_reconnect_execute(const char *input_json,
                                                   char *output,
                                                   size_t output_size)
 {
-    cap_tailscale_status_t status = {0};
-    cap_tailscale_mutation_result_t result = {
-        .ok = true,
-    };
+    cap_tailscale_status_t *status;
+    cap_tailscale_mutation_result_t *result;
     esp_err_t err;
 
     (void)ctx;
@@ -339,18 +442,36 @@ static esp_err_t cap_tailscale_reconnect_execute(const char *input_json,
                                            "Tailscale service is unavailable.");
         return ESP_ERR_INVALID_STATE;
     }
-    err = s_provider.reconnect(&status, s_provider.ctx);
+    status = cap_tailscale_calloc(1, sizeof(*status));
+    if (status == NULL) {
+        cap_tailscale_write_mutation_error(output, output_size, "out_of_memory",
+                                           "Unable to allocate Tailscale status.");
+        return ESP_ERR_NO_MEM;
+    }
+    result = cap_tailscale_calloc(1, sizeof(*result));
+    if (result == NULL) {
+        free(status);
+        cap_tailscale_write_mutation_error(output, output_size, "out_of_memory",
+                                           "Unable to allocate the reconnect result.");
+        return ESP_ERR_NO_MEM;
+    }
+    err = s_provider.reconnect(status, s_provider.ctx);
     if (err != ESP_OK) {
+        free(result);
+        free(status);
         cap_tailscale_write_mutation_error(output, output_size, "reconnect_failed",
                                            "Unable to reconnect Tailscale.");
         return err;
     }
 
-    cap_tailscale_copy_text(result.message, sizeof(result.message), "Reconnect requested.");
-    cap_tailscale_copy_text(result.exit_state, sizeof(result.exit_state), status.exit_state);
-    cap_tailscale_copy_text(result.egress, sizeof(result.egress), status.egress);
-    result.persisted = true;
-    err = cap_tailscale_render_mutation_json(&result, output, output_size);
+    result->ok = true;
+    cap_tailscale_copy_text(result->message, sizeof(result->message), "Reconnect requested.");
+    cap_tailscale_copy_text(result->exit_state, sizeof(result->exit_state), status->exit_state);
+    cap_tailscale_copy_text(result->egress, sizeof(result->egress), status->egress);
+    result->persisted = true;
+    err = cap_tailscale_render_mutation_json(result, output, output_size);
+    free(result);
+    free(status);
     if (err != ESP_OK) {
         cap_tailscale_write_mutation_error(output, output_size, "output_too_small",
                                            "Unable to render the reconnect result.");
@@ -419,6 +540,9 @@ static const claw_cap_group_t cap_tailscale = {
 
 esp_err_t cap_tailscale_set_provider(const cap_tailscale_provider_t *provider)
 {
+    if (s_provider_frozen) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (provider == NULL) {
         memset(&s_provider, 0, sizeof(s_provider));
         s_provider_installed = false;
@@ -436,8 +560,30 @@ esp_err_t cap_tailscale_set_provider(const cap_tailscale_provider_t *provider)
 
 esp_err_t cap_tailscale_register_group(void)
 {
+    esp_err_t err;
+
     if (claw_cap_group_exists(cap_tailscale.group_id)) {
+        s_provider_frozen = true;
         return ESP_OK;
     }
-    return claw_cap_register_group(&cap_tailscale);
+    err = claw_cap_register_group(&cap_tailscale);
+    if (err == ESP_OK) {
+        s_provider_frozen = true;
+    }
+    return err;
 }
+
+#ifdef CAP_TAILSCALE_HOST_TEST
+void cap_tailscale_test_reset(void)
+{
+    memset(&s_provider, 0, sizeof(s_provider));
+    s_provider_installed = false;
+    s_provider_frozen = false;
+    s_successful_allocations_before_failure = -1;
+}
+
+void cap_tailscale_test_fail_allocations_after(int successful_allocations)
+{
+    s_successful_allocations_before_failure = successful_allocations;
+}
+#endif

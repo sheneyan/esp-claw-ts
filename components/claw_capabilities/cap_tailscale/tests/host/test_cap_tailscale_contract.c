@@ -219,6 +219,9 @@ static void test_selector_normalization_and_cgnat_range(void)
     TEST_CHECK(cap_tailscale_validate_selector("100.064.0.1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_validate_selector("100.64.0", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_validate_selector("100.64.0.1x", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("127.1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("0xC0A80101", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("2130706433", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_validate_selector("node.example", selector, sizeof(selector)) == ESP_OK);
     TEST_CHECK(strcmp(selector, "node.example") == 0);
 

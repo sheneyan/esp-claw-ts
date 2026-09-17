@@ -1,5 +1,7 @@
 #include "cap_tailscale.h"
+#include "cap_tailscale_contract.h"
 #include "claw_cap.h"
+#include "cJSON.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +14,7 @@ static int s_list_calls;
 static int s_set_calls;
 static int s_clear_calls;
 static int s_reconnect_calls;
+static int s_replacement_status_calls;
 static esp_err_t s_status_result;
 static esp_err_t s_set_result;
 static bool s_set_semantic_rejection;
@@ -80,6 +83,14 @@ static esp_err_t fake_get_status(cap_tailscale_status_t *out, void *ctx)
     }
     populate_status(out);
     return ESP_OK;
+}
+
+static esp_err_t replacement_get_status(cap_tailscale_status_t *out, void *ctx)
+{
+    (void)out;
+    (void)ctx;
+    ++s_replacement_status_calls;
+    return ESP_FAIL;
 }
 
 static int fake_list_exit_nodes(cap_tailscale_exit_node_t *out, size_t capacity, void *ctx)
@@ -157,6 +168,18 @@ static esp_err_t execute(size_t index, const char *input, char *output, size_t o
     return descriptor(index)->execute(input, NULL, output, output_size);
 }
 
+static void assert_complete_json_or_empty(const char *output)
+{
+    cJSON *root;
+
+    if (output[0] == '\0') {
+        return;
+    }
+    root = cJSON_ParseWithOpts(output, NULL, 1);
+    TEST_CHECK(root != NULL);
+    cJSON_Delete(root);
+}
+
 static void test_registration_schemas_and_read_handlers(void)
 {
     static const char *const expected_ids[] = {
@@ -229,6 +252,55 @@ static void test_confirmed_mutations_and_rejections(void)
     TEST_CHECK(s_reconnect_calls == reconnect_before);
 }
 
+static void test_strict_json_authorization_boundary(void)
+{
+    char output[4096];
+    int set_before = s_set_calls;
+    int status_before = s_status_calls;
+    int list_before = s_list_calls;
+
+    TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"user_confirmed\":true}garbage",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(strstr(output, "invalid_input") != NULL);
+    TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"user_confirmed\":true,\"user_confirmed\":false}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"user_confirmed\":false,\"user_confirmed\":true}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"node\":\"other.example\",\"user_confirmed\":true}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(2, "{\"node\":\"node\\u0000example\",\"user_confirmed\":true}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"user_confirmed\\u0000extra\":true}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(s_set_calls == set_before);
+
+    TEST_CHECK(execute(0, "{}garbage", output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(1, "{\"unexpected\":1}", output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(0, "{\"unknown\":1,\"unknown\":2}", output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(s_status_calls == status_before);
+    TEST_CHECK(s_list_calls == list_before);
+}
+
+static void test_error_output_never_contains_partial_json(void)
+{
+    static const size_t output_sizes[] = {0, 1, 12, 13, 16, 256};
+    char output[256];
+    size_t index;
+
+    for (index = 0; index < sizeof(output_sizes) / sizeof(output_sizes[0]); ++index) {
+        memset(output, 'x', sizeof(output));
+        TEST_CHECK(execute(0, "{}garbage", output, output_sizes[index]) == ESP_ERR_INVALID_ARG);
+        if (output_sizes[index] == 0) {
+            continue;
+        }
+        assert_complete_json_or_empty(output);
+
+        memset(output, 'x', sizeof(output));
+        TEST_CHECK(execute(2, "{\"node\":\"node.example\"}", output, output_sizes[index]) == ESP_ERR_INVALID_STATE);
+        assert_complete_json_or_empty(output);
+    }
+}
+
 static void test_selector_and_provider_result_boundaries(void)
 {
     char output[4096];
@@ -262,6 +334,7 @@ static void test_unavailable_and_transport_errors_are_safe(void)
         .reconnect = fake_reconnect,
     };
 
+    cap_tailscale_test_reset();
     TEST_CHECK(cap_tailscale_set_provider(NULL) == ESP_OK);
     TEST_CHECK(execute(0, "{}", output, sizeof(output)) == ESP_ERR_INVALID_STATE);
     TEST_CHECK(strstr(output, "provider_unavailable") != NULL);
@@ -285,6 +358,44 @@ static void test_unavailable_and_transport_errors_are_safe(void)
     s_set_result = ESP_OK;
 }
 
+static void test_frozen_provider_and_allocation_failure(void)
+{
+    cap_tailscale_provider_t original = {
+        .get_status = fake_get_status,
+        .list_exit_nodes = fake_list_exit_nodes,
+        .set_exit_node = fake_set_exit_node,
+        .clear_exit_node = fake_clear_exit_node,
+        .reconnect = fake_reconnect,
+    };
+    cap_tailscale_provider_t replacement = {
+        .get_status = replacement_get_status,
+        .list_exit_nodes = fake_list_exit_nodes,
+        .set_exit_node = fake_set_exit_node,
+        .clear_exit_node = fake_clear_exit_node,
+        .reconnect = fake_reconnect,
+    };
+    char output[4096];
+    int status_before;
+
+    cap_tailscale_test_reset();
+    s_group_exists = false;
+    TEST_CHECK(cap_tailscale_set_provider(&original) == ESP_OK);
+    TEST_CHECK(cap_tailscale_register_group() == ESP_OK);
+    TEST_CHECK(cap_tailscale_set_provider(NULL) == ESP_ERR_INVALID_STATE);
+    TEST_CHECK(cap_tailscale_set_provider(&replacement) == ESP_ERR_INVALID_STATE);
+    status_before = s_status_calls;
+    TEST_CHECK(execute(0, "{}", output, sizeof(output)) == ESP_OK);
+    TEST_CHECK(s_status_calls == status_before + 1);
+    TEST_CHECK(s_replacement_status_calls == 0);
+
+    cap_tailscale_test_reset();
+    TEST_CHECK(cap_tailscale_set_provider(&original) == ESP_OK);
+    cap_tailscale_test_fail_allocations_after(0);
+    TEST_CHECK(execute(0, "{}", output, sizeof(output)) == ESP_ERR_NO_MEM);
+    TEST_CHECK(strstr(output, "out_of_memory") != NULL);
+    cap_tailscale_test_fail_allocations_after(-1);
+}
+
 int main(void)
 {
     cap_tailscale_provider_t provider = {
@@ -295,11 +406,16 @@ int main(void)
         .reconnect = fake_reconnect,
     };
 
+    cap_tailscale_test_reset();
+    s_group_exists = false;
     TEST_CHECK(cap_tailscale_set_provider(&provider) == ESP_OK);
     test_registration_schemas_and_read_handlers();
     test_confirmed_mutations_and_rejections();
+    test_strict_json_authorization_boundary();
+    test_error_output_never_contains_partial_json();
     test_selector_and_provider_result_boundaries();
     test_unavailable_and_transport_errors_are_safe();
+    test_frozen_provider_and_allocation_failure();
     puts("cap_tailscale_handlers: all tests passed");
     return 0;
 }

@@ -33,5 +33,6 @@ target_include_directories(test_cap_tailscale_handlers PRIVATE
     ../../private_include
 )
 target_compile_options(test_cap_tailscale_handlers PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(test_cap_tailscale_handlers PRIVATE CAP_TAILSCALE_HOST_TEST)
 
 add_test(NAME cap_tailscale_handlers COMMAND test_cap_tailscale_handlers)

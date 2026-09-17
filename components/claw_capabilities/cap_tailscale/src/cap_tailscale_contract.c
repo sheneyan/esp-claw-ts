@@ -275,6 +275,26 @@ static bool cap_tailscale_selector_is_ipv4_like(const char *selector)
     return true;
 }
 
+static bool cap_tailscale_selector_is_legacy_numeric_form(const char *selector)
+{
+    bool saw_dot = false;
+    const char *cursor;
+
+    if (selector[0] == '0' && (selector[1] == 'x' || selector[1] == 'X')) {
+        return true;
+    }
+    for (cursor = selector; *cursor != '\0'; ++cursor) {
+        if (*cursor == '.') {
+            saw_dot = true;
+            continue;
+        }
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+    }
+    return saw_dot || selector[0] != '\0';
+}
+
 esp_err_t cap_tailscale_validate_selector(const char *selector,
                                           char *out_selector,
                                           size_t out_selector_size)
@@ -284,8 +304,9 @@ esp_err_t cap_tailscale_validate_selector(const char *selector,
     if (err != ESP_OK) {
         return err;
     }
-    if (cap_tailscale_selector_is_ipv4_like(out_selector) &&
-        !cap_tailscale_selector_is_cgnat(out_selector)) {
+    if (!cap_tailscale_selector_is_cgnat(out_selector) &&
+        (cap_tailscale_selector_is_ipv4_like(out_selector) ||
+         cap_tailscale_selector_is_legacy_numeric_form(out_selector))) {
         out_selector[0] = '\0';
         return ESP_ERR_INVALID_ARG;
     }
@@ -464,5 +485,29 @@ esp_err_t cap_tailscale_render_mutation_json(const cap_tailscale_mutation_result
     cap_tailscale_json_append_bool(&writer, result->persisted);
     cap_tailscale_json_append_char(&writer, '}');
 
+    return cap_tailscale_json_finish(&writer);
+}
+
+esp_err_t cap_tailscale_render_error_json(const char *error,
+                                          const char *message,
+                                          char *output,
+                                          size_t output_size)
+{
+    cap_tailscale_json_writer_t writer;
+
+    if (error == NULL || message == NULL || output == NULL || output_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    writer = (cap_tailscale_json_writer_t) {
+        .output = output,
+        .output_size = output_size,
+    };
+    output[0] = '\0';
+    cap_tailscale_json_append_literal(&writer, "{\"ok\":false,\"error\":");
+    cap_tailscale_json_append_string(&writer, error, strlen(error));
+    cap_tailscale_json_append_literal(&writer, ",\"message\":");
+    cap_tailscale_json_append_string(&writer, message, strlen(message));
+    cap_tailscale_json_append_char(&writer, '}');
     return cap_tailscale_json_finish(&writer);
 }
