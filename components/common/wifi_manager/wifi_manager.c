@@ -253,7 +253,7 @@ static esp_err_t restore_ap_network_config(const esp_netif_ip_info_t *ip_info,
     esp_err_t err = esp_netif_dhcps_get_status(s_ap_netif, &current_status);
     capture_first_error(err, &rollback_err);
 
-    if (err == ESP_OK && current_status == ESP_NETIF_DHCP_STARTED) {
+    if (err == ESP_OK && current_status != ESP_NETIF_DHCP_STOPPED) {
         err = esp_netif_dhcps_stop(s_ap_netif);
         capture_first_error(err, &rollback_err);
     }
@@ -267,14 +267,27 @@ static esp_err_t restore_ap_network_config(const esp_netif_ip_info_t *ip_info,
 
     err = esp_netif_dhcps_get_status(s_ap_netif, &current_status);
     capture_first_error(err, &rollback_err);
-    if (err == ESP_OK && original_status == ESP_NETIF_DHCP_STARTED &&
-        current_status != ESP_NETIF_DHCP_STARTED) {
-        err = esp_netif_dhcps_start(s_ap_netif);
-        capture_first_error(err, &rollback_err);
-    } else if (err == ESP_OK && original_status != ESP_NETIF_DHCP_STARTED &&
-               current_status == ESP_NETIF_DHCP_STARTED) {
-        err = esp_netif_dhcps_stop(s_ap_netif);
-        capture_first_error(err, &rollback_err);
+    if (err == ESP_OK) {
+        if (original_status == ESP_NETIF_DHCP_STARTED &&
+            current_status != ESP_NETIF_DHCP_STARTED) {
+            err = esp_netif_dhcps_start(s_ap_netif);
+            capture_first_error(err, &rollback_err);
+        } else if (original_status == ESP_NETIF_DHCP_INIT &&
+                   current_status != ESP_NETIF_DHCP_INIT) {
+            if (current_status == ESP_NETIF_DHCP_STARTED) {
+                err = esp_netif_dhcps_stop(s_ap_netif);
+                capture_first_error(err, &rollback_err);
+            }
+            if (err == ESP_OK) {
+                /* On a down AP netif, start restores the pre-start INIT state. */
+                err = esp_netif_dhcps_start(s_ap_netif);
+                capture_first_error(err, &rollback_err);
+            }
+        } else if (original_status == ESP_NETIF_DHCP_STOPPED &&
+                   current_status != ESP_NETIF_DHCP_STOPPED) {
+            err = esp_netif_dhcps_stop(s_ap_netif);
+            capture_first_error(err, &rollback_err);
+        }
     }
 
     return rollback_err;
@@ -334,7 +347,7 @@ static esp_err_t apply_ap_network_config(void)
 
     ESP_RETURN_ON_ERROR(esp_netif_dhcps_get_status(s_ap_netif, &dhcp_status), TAG,
                         "Failed to query AP DHCP status");
-    if (dhcp_status == ESP_NETIF_DHCP_STARTED) {
+    if (dhcp_status != ESP_NETIF_DHCP_STOPPED) {
         ESP_RETURN_ON_ERROR(esp_netif_dhcps_stop(s_ap_netif), TAG,
                             "Failed to stop AP DHCP server");
     }
