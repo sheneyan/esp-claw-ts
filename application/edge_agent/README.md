@@ -83,3 +83,25 @@ idf.py menuconfig
 idf.py build
 idf.py flash monitor
 ```
+
+## Headless TS-Claw target
+
+The `esp32_s3_n16r8_ts_claw` board target adds optional Tailscale connectivity
+to the headless ESP-Claw build. Its provisioning AP uses `192.168.237.1/24` and
+closes after the station interface connects unless the saved AP behavior is
+explicitly set to `keep`. The LAN web console starts independently of
+Tailscale, so invalid credentials, an unavailable coordination server, or an
+offline Exit Node do not block local recovery. When a configured Exit Node is
+unhealthy, public traffic falls back to the normal Wi-Fi route.
+
+Use the pinned ESP-IDF version for this target:
+
+```bash
+. /path/to/esp-idf-v5.5.4/export.sh
+cd application/edge_agent
+idf.py bmgr -c ./boards -b esp32_s3_n16r8_ts_claw
+idf.py build
+```
+
+Configure the Tailscale settings in the web console. Authentication keys are
+write-only and must never be placed in source files, build commands, or logs.

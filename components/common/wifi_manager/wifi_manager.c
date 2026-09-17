@@ -697,6 +697,11 @@ void wifi_manager_get_status(wifi_manager_status_t *status)
     status->mode = wifi_manager_mode_string(s_mode);
 }
 
+esp_netif_t *wifi_manager_get_sta_netif(void)
+{
+    return s_sta_netif;
+}
+
 esp_netif_t *wifi_manager_get_ap_netif(void)
 {
     return s_ap_netif;

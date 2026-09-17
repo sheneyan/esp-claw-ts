@@ -58,6 +58,8 @@ esp_err_t wifi_manager_set_provisioning_ap(bool enabled);
 esp_err_t wifi_manager_wait_connected(uint32_t timeout_ms);
 esp_err_t wifi_manager_register_state_callback(wifi_manager_state_cb_t cb, void *user_ctx);
 void wifi_manager_get_status(wifi_manager_status_t *status);
+/* Borrowed for the application lifetime; callers must not destroy this netif. */
+esp_netif_t *wifi_manager_get_sta_netif(void);
 esp_netif_t *wifi_manager_get_ap_netif(void);
 esp_err_t wifi_manager_scan_aps(wifi_manager_scan_record_t *records,
                                 uint16_t max_records,

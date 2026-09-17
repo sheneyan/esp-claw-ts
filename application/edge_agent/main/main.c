@@ -33,6 +33,7 @@
 #include "provision_button.h"
 #include "settings_store.h"
 #include "ts_claw.h"
+#include "lwip/def.h"
 #endif
 
 #define APP_ENABLE_MEM_LOG        (0)
@@ -41,6 +42,9 @@ static const char *TAG = "app";
 
 static app_config_t *s_config;
 static app_claw_config_t *s_claw_config;
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+static bool s_ts_claw_initialized;
+#endif
 
 static esp_err_t app_allocate_runtime_state(void)
 {
@@ -103,6 +107,17 @@ static void on_wifi_state_changed(bool connected, void *user_ctx)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to update network UI: %s", esp_err_to_name(err));
     }
+
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+    if (s_ts_claw_initialized) {
+        esp_netif_t *sta_netif = connected ? wifi_manager_get_sta_netif() : NULL;
+        err = ts_claw_notify_wifi(connected, sta_netif);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to notify TS-Claw of Wi-Fi state: %s",
+                     esp_err_to_name(err));
+        }
+    }
+#endif
 }
 
 static esp_err_t main_load_config(app_config_t *config)
@@ -210,6 +225,108 @@ static esp_err_t main_restart_device(void)
 }
 
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+static bool main_parse_uint8_range(const char *value, uint8_t minimum,
+                                   uint8_t maximum, uint8_t *out)
+{
+    unsigned parsed = 0;
+
+    if (!value || !value[0] || !out) {
+        return false;
+    }
+    for (const unsigned char *cursor = (const unsigned char *)value; *cursor; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+        parsed = parsed * 10U + (unsigned)(*cursor - '0');
+        if (parsed > maximum) {
+            return false;
+        }
+    }
+    if (parsed < minimum) {
+        return false;
+    }
+    *out = (uint8_t)parsed;
+    return true;
+}
+
+static bool main_parse_cgnat_ipv4(const char *value, uint32_t *out)
+{
+    esp_ip4_addr_t parsed = {0};
+
+    if (!value || !value[0] || !out || esp_netif_str_to_ip4(value, &parsed) != ESP_OK) {
+        return false;
+    }
+    const uint32_t host_order = lwip_ntohl(parsed.addr);
+    if (host_order < UINT32_C(0x64400000) || host_order > UINT32_C(0x647fffff)) {
+        return false;
+    }
+    *out = host_order;
+    return true;
+}
+
+static esp_err_t main_build_ts_claw_config(const app_config_t *config,
+                                           ts_claw_config_t *out)
+{
+    char validation_message[96] = {0};
+
+    ESP_RETURN_ON_FALSE(config && out, ESP_ERR_INVALID_ARG, TAG,
+                        "Missing TS-Claw startup config");
+    ESP_RETURN_ON_ERROR(app_config_validate_tailscale(config, validation_message,
+                                                      sizeof(validation_message)),
+                        TAG, "Invalid TS-Claw settings: %s", validation_message);
+
+    memset(out, 0, sizeof(*out));
+    out->enabled = strcmp(config->tailscale_enabled, "true") == 0 ||
+                   strcmp(config->tailscale_enabled, "1") == 0;
+    out->auth_key = config->tailscale_auth_key;
+    out->hostname = config->tailscale_hostname;
+    out->login_server = config->tailscale_login_server;
+
+    if (!main_parse_uint8_range(config->tailscale_max_peers, 1, 64, &out->max_peers)) {
+        if (out->enabled) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        out->max_peers = 16;
+    }
+
+    if (!out->enabled) {
+        return ESP_OK;
+    }
+    if (!out->auth_key[0] || !out->hostname[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (config->tailscale_exit_node[0] &&
+        !main_parse_cgnat_ipv4(config->tailscale_exit_node, &out->exit_node_ip)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t main_init_ts_claw(const app_config_t *config)
+{
+    ts_claw_config_t runtime_config = {0};
+    esp_err_t err = main_build_ts_claw_config(config, &runtime_config);
+    if (err == ESP_OK) {
+        err = ts_claw_init(&runtime_config);
+    }
+    if (err == ESP_OK) {
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG,
+             "TS-Claw settings could not be activated (%s); starting disabled for LAN recovery",
+             esp_err_to_name(err));
+    const ts_claw_config_t disabled_config = {
+        .enabled = false,
+        .auth_key = "",
+        .hostname = "",
+        .login_server = "",
+        .exit_node_ip = 0,
+        .max_peers = 16,
+    };
+    return ts_claw_init(&disabled_config);
+}
+
 static const char *main_tailscale_exit_state_name(ts_exit_state_t state)
 {
     switch (state) {
@@ -470,6 +587,15 @@ void app_main(void)
     ESP_ERROR_CHECK(claw_paths_set(CLAW_PATH_SYSTEM, app_fs_system_base_path()));
 
     ESP_ERROR_CHECK(wifi_manager_init());
+#if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+    esp_err_t ts_claw_err = main_init_ts_claw(s_config);
+    if (ts_claw_err == ESP_OK) {
+        s_ts_claw_initialized = true;
+    } else {
+        ESP_LOGE(TAG, "TS-Claw startup unavailable: %s; continuing with LAN services",
+                 esp_err_to_name(ts_claw_err));
+    }
+#endif
 
     ESP_ERROR_CHECK(app_claw_ui_start());
 
