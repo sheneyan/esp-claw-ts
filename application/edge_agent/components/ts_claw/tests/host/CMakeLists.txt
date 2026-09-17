@@ -34,5 +34,20 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(test_ts_claw_route_hook PRIVATE -Wall -Wextra -Werror -pedantic)
 endif()
 
+add_executable(test_ts_claw_diagnostics
+    test_ts_claw_diagnostics.c
+    ../../ts_claw_diagnostics.c
+)
+
+target_include_directories(test_ts_claw_diagnostics PRIVATE
+    ../..
+    ../../include
+)
+
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(test_ts_claw_diagnostics PRIVATE -Wall -Wextra -Werror -pedantic)
+endif()
+
 add_test(NAME ts_claw_route_hook COMMAND test_ts_claw_route_hook)
 add_test(NAME ts_claw_policy COMMAND test_ts_claw_policy)
+add_test(NAME ts_claw_diagnostics COMMAND test_ts_claw_diagnostics)

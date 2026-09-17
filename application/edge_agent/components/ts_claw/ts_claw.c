@@ -1,5 +1,8 @@
+#define TS_CLAW_DIAGNOSTICS_INTERNAL
+#include "ts_claw_diagnostics.h"
 #include "ts_claw.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,6 +16,7 @@
 #include "freertos/task.h"
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
+#include "microlink.h"
 #include "ping/ping_sock.h"
 #include "ts_claw_route_hook.h"
 
@@ -44,6 +48,7 @@ typedef enum {
 
 typedef enum {
     TS_EVENT_WIFI_CHANGED,
+    TS_EVENT_GET_DIAGNOSTICS,
     TS_EVENT_GET_EXIT_NODES,
     TS_EVENT_FACTORY_RESET,
 } ts_event_type_t;
@@ -52,7 +57,8 @@ typedef struct {
     ts_event_type_t type;
     SemaphoreHandle_t reply_signal;
     esp_err_t *reply_result;
-    microlink_peer_info_t *nodes;
+    ts_claw_diagnostics_t *diagnostics;
+    ts_claw_peer_t *nodes;
     size_t node_capacity;
     size_t *node_count;
 } ts_event_t;
@@ -66,6 +72,8 @@ typedef struct {
     SemaphoreHandle_t lock;
     TaskHandle_t worker;
     microlink_t *ml;
+    /* Scratch storage is owned exclusively by the serialized worker. */
+    microlink_peer_info_t peer_snapshot;
     esp_ping_handle_t exit_ping;
     SemaphoreHandle_t exit_ping_end;
     struct netif *exit_ping_wg_netif;
@@ -613,16 +621,17 @@ static void worker_refresh_status(void)
         return;
     }
 
+    microlink_peer_info_t *peer = &s_ts.peer_snapshot;
+
     bool direct = false;
     for (int i = 0; i < diag.peer_count; ++i) {
-        microlink_peer_info_t peer = {0};
-        if (microlink_get_peer_info(s_ts.ml, i, &peer) == ESP_OK &&
-            peer.online && peer.direct_path) {
+        memset(peer, 0, sizeof(*peer));
+        if (microlink_get_peer_info(s_ts.ml, i, peer) == ESP_OK &&
+            peer->online && peer->direct_path) {
             direct = true;
             break;
         }
     }
-
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     s_ts.status.connected = diag.connected && s_ts.wifi_has_ip;
     s_ts.status.direct_path_available = direct && s_ts.status.connected;
@@ -797,7 +806,67 @@ static void worker_sample_resources(uint64_t current_ms)
     }
 }
 
-static esp_err_t worker_get_exit_nodes(microlink_peer_info_t *nodes,
+static esp_err_t worker_get_diagnostics(ts_claw_diagnostics_t *out,
+                                        uint64_t current_ms)
+{
+    memset(out, 0, sizeof(*out));
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    out->status = s_ts.status;
+    copy_string(out->hostname, sizeof(out->hostname), s_ts.hostname);
+    xSemaphoreGive(s_ts.lock);
+
+    if (s_ts.ml == NULL) {
+        return ESP_OK;
+    }
+
+    microlink_diag_t *diag = calloc(1u, sizeof(*diag));
+    if (diag == NULL) {
+        memset(out, 0, sizeof(*out));
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = microlink_get_diag(s_ts.ml, diag);
+    if (err != ESP_OK) {
+        free(diag);
+        memset(out, 0, sizeof(*out));
+        return err;
+    }
+
+    out->derp_active_region = diag->derp_home_region;
+    copy_string(out->derp_active_name, sizeof(out->derp_active_name),
+                microlink_get_derp_region_name(s_ts.ml, diag->derp_home_region));
+    out->derp_default_region = diag->derp_region_default;
+    copy_string(out->derp_default_name, sizeof(out->derp_default_name),
+                microlink_get_derp_region_name(s_ts.ml, diag->derp_region_default));
+    out->derp_heartbeat_age_ms = ts_claw_timestamp_age_ms(
+        current_ms, microlink_get_last_derp_heartbeat_ms(s_ts.ml));
+    out->control_rx_age_ms = ts_claw_timestamp_age_ms(
+        current_ms, microlink_get_ctrl_last_rx_ms(s_ts.ml));
+    out->rc_coord_stream_wd = diag->rc_coord_stream_wd;
+    out->rc_coord_transport = diag->rc_coord_transport;
+    out->rc_derp_rx_wd = diag->rc_derp_rx_wd;
+    out->rc_derp_retry = diag->rc_derp_retry;
+
+    microlink_derp_rtt_t raw_rtts[TS_CLAW_MAX_DERP_RTTS];
+    const int raw_count = microlink_get_derp_rtts(
+        s_ts.ml, raw_rtts, TS_CLAW_MAX_DERP_RTTS);
+    for (int i = 0; i < raw_count && i < TS_CLAW_MAX_DERP_RTTS; ++i) {
+        const ts_claw_derp_rtt_source_t source = {
+            .region_id = raw_rtts[i].region_id,
+            .rtt_ms = raw_rtts[i].rtt_ms,
+            .region_name = microlink_get_derp_region_name(
+                s_ts.ml, raw_rtts[i].region_id),
+        };
+        out->derp_rtt_count += ts_claw_convert_derp_rtts(
+            &out->derp_rtts[out->derp_rtt_count], 1u, &source, 1u);
+    }
+
+    free(diag);
+    return ESP_OK;
+}
+
+static esp_err_t worker_get_exit_nodes(ts_claw_peer_t *nodes,
                                        size_t capacity,
                                        size_t *count)
 {
@@ -806,15 +875,31 @@ static esp_err_t worker_get_exit_nodes(microlink_peer_info_t *nodes,
         return ESP_OK;
     }
 
+    microlink_peer_info_t *peer = &s_ts.peer_snapshot;
+
     const int peers = microlink_get_peer_count(s_ts.ml);
     for (int i = 0; i < peers; ++i) {
-        microlink_peer_info_t peer = {0};
-        esp_err_t err = microlink_get_peer_info(s_ts.ml, i, &peer);
+        memset(peer, 0, sizeof(*peer));
+        esp_err_t err = microlink_get_peer_info(s_ts.ml, i, peer);
         if (err != ESP_OK) {
+            while (*count > 0u) {
+                (*count)--;
+                memset(&nodes[*count], 0, sizeof(nodes[*count]));
+            }
             return err;
         }
-        if (peer.is_exit_node && *count < capacity) {
-            nodes[*count] = peer;
+        if (peer->is_exit_node && *count < capacity) {
+            ts_claw_peer_t *node = &nodes[*count];
+            memset(node, 0, sizeof(*node));
+            node->vpn_ip = peer->vpn_ip;
+            copy_string(node->hostname, sizeof(node->hostname), peer->hostname);
+            node->online = peer->online;
+            node->direct = peer->direct_path;
+            node->is_exit_node = peer->is_exit_node;
+            node->derp_region = peer->derp_region;
+            copy_string(node->derp_region_name, sizeof(node->derp_region_name),
+                        microlink_get_derp_region_name(s_ts.ml,
+                                                       peer->derp_region));
             (*count)++;
         }
     }
@@ -829,6 +914,11 @@ static void worker_handle_event(const ts_event_t *event)
     case TS_EVENT_WIFI_CHANGED:
         worker_consume_pending_wifi();
         break;
+    case TS_EVENT_GET_DIAGNOSTICS: {
+        const uint64_t current_ms = now_ms();
+        result = worker_get_diagnostics(event->diagnostics, current_ms);
+        break;
+    }
     case TS_EVENT_GET_EXIT_NODES:
         result = worker_get_exit_nodes(event->nodes, event->node_capacity,
                                        event->node_count);
@@ -986,6 +1076,24 @@ esp_err_t ts_claw_get_status(ts_claw_status_t *out_status)
     return ESP_OK;
 }
 
+esp_err_t ts_claw_get_diagnostics(ts_claw_diagnostics_t *out)
+{
+    if (!s_ts.initialized || out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(out, 0, sizeof(*out));
+    ts_event_t event = {
+        .type = TS_EVENT_GET_DIAGNOSTICS,
+        .diagnostics = out,
+    };
+    esp_err_t err = send_sync_event(&event);
+    if (err != ESP_OK) {
+        memset(out, 0, sizeof(*out));
+    }
+    return err;
+}
+
 static esp_err_t send_sync_event(ts_event_t *event)
 {
     if (xTaskGetCurrentTaskHandle() == s_ts.worker) {
@@ -1008,9 +1116,9 @@ static esp_err_t send_sync_event(ts_event_t *event)
     return result;
 }
 
-int ts_claw_get_exit_nodes(microlink_peer_info_t *out_nodes, int capacity)
+int ts_claw_list_exit_nodes(ts_claw_peer_t *out, size_t capacity)
 {
-    if (!s_ts.initialized || capacity < 0 || (capacity > 0 && out_nodes == NULL)) {
+    if (!s_ts.initialized || (capacity > 0u && out == NULL)) {
         return -ESP_ERR_INVALID_ARG;
     }
 
@@ -1018,8 +1126,8 @@ int ts_claw_get_exit_nodes(microlink_peer_info_t *out_nodes, int capacity)
 
     ts_event_t event = {
         .type = TS_EVENT_GET_EXIT_NODES,
-        .nodes = out_nodes,
-        .node_capacity = (size_t)capacity,
+        .nodes = out,
+        .node_capacity = capacity,
         .node_count = &count,
     };
     esp_err_t err = send_sync_event(&event);

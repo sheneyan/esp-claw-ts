@@ -10,6 +10,7 @@ if(_TS_CLAW_BOARD_MARKER)
     idf_component_register(
         SRCS
             "ts_claw.c"
+            "ts_claw_diagnostics.c"
             "ts_claw_policy.c"
             "ts_claw_route_hook.c"
         INCLUDE_DIRS "include"
