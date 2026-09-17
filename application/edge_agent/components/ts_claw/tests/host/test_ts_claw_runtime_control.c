@@ -26,8 +26,8 @@ typedef struct {
     size_t call_count;
     uint32_t desired_ip;
     esp_err_t retire_result;
-    esp_err_t destroy_results[3];
-    uint32_t destroy_advance_ms[3];
+    esp_err_t destroy_results[4];
+    uint32_t destroy_advance_ms[4];
     size_t destroy_count;
     esp_err_t set_results[3];
     size_t set_count;
@@ -68,10 +68,10 @@ static esp_err_t fake_destroy(void *ctx)
     fake_runtime_t *fake = ctx;
     log_call(fake, 'D');
     const size_t index = fake->destroy_count++;
-    if (index < 3u) {
+    if (index < 4u) {
         fake->now_ms += fake->destroy_advance_ms[index];
     }
-    const esp_err_t result = index < 3u ? fake->destroy_results[index] : ESP_OK;
+    const esp_err_t result = index < 4u ? fake->destroy_results[index] : ESP_OK;
     if (result == ESP_OK) {
         fake->ml_exists = false;
     } else {
@@ -175,18 +175,18 @@ static void test_wifi_pending_defers_up_during_runtime_operation(void)
 
     TEST_CHECK(ts_claw_runtime_wifi_pending_record(&pending, false, NULL));
     TEST_CHECK(ts_claw_runtime_wifi_pending_take(
-        &pending, true, &has_ip, &netif));
+        &pending, true, false, &has_ip, &netif));
     TEST_CHECK(!has_ip && netif == NULL);
 
     TEST_CHECK(ts_claw_runtime_wifi_pending_record(
         &pending, true, first_netif));
     TEST_CHECK(!ts_claw_runtime_wifi_pending_take(
-        &pending, true, &has_ip, &netif));
+        &pending, true, false, &has_ip, &netif));
     TEST_CHECK(pending.pending);
     TEST_CHECK(!ts_claw_runtime_wifi_pending_record(
         &pending, true, latest_netif));
     TEST_CHECK(ts_claw_runtime_wifi_pending_take(
-        &pending, false, &has_ip, &netif));
+        &pending, false, false, &has_ip, &netif));
     TEST_CHECK(has_ip && netif == latest_netif);
     TEST_CHECK(!pending.pending);
 }
@@ -200,10 +200,10 @@ static void test_wifi_pending_down_supersedes_deferred_up(void)
     TEST_CHECK(ts_claw_runtime_wifi_pending_record(
         &pending, true, (void *)(uintptr_t)2u));
     TEST_CHECK(!ts_claw_runtime_wifi_pending_take(
-        &pending, true, &has_ip, &netif));
+        &pending, true, false, &has_ip, &netif));
     TEST_CHECK(!ts_claw_runtime_wifi_pending_record(&pending, false, NULL));
     TEST_CHECK(ts_claw_runtime_wifi_pending_take(
-        &pending, true, &has_ip, &netif));
+        &pending, true, false, &has_ip, &netif));
     TEST_CHECK(!has_ip && netif == NULL);
 }
 
@@ -320,6 +320,75 @@ static void test_two_destroy_timeouts_leave_one_cleanup_retry_until_success(void
     TEST_CHECK(fake.destroy_count == 3u);
     TEST_CHECK(fake.start_count == 0u);
     TEST_CHECK(fake.destroy_retry.mode == TS_CLAW_RUNTIME_DESTROY_RETRY_NONE);
+}
+
+static void test_cleanup_precedes_deferred_wifi_up_replay(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    ts_claw_runtime_wifi_pending_t pending = {0};
+    bool has_ip = false;
+    void *netif = NULL;
+    unsigned pin_count = 0u;
+    unsigned rebind_count = 0u;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.destroy_results[0] = TEST_ERROR;
+    fake.destroy_results[1] = TEST_ERROR;
+    fake.destroy_results[2] = TEST_ERROR;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_wifi_pending_record(
+        &pending, true, (void *)(uintptr_t)2u));
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
+    const ts_claw_runtime_completion_t completion =
+        take_completion(&control, TEST_ERROR);
+    TEST_CHECK(completion.rollback_attempted);
+    TEST_CHECK(!completion.rollback_recovered);
+    TEST_CHECK(fake.destroy_count == 2u);
+    TEST_CHECK(fake.start_count == 0u);
+    TEST_CHECK(fake.ml_exists);
+
+    fake.now_ms = 999u;
+    TEST_CHECK(!ts_claw_runtime_wifi_pending_take(
+        &pending, false, true, &has_ip, &netif));
+    TEST_CHECK(!ts_claw_runtime_destroy_retry_due(
+        &fake.destroy_retry, fake.now_ms));
+
+    fake.now_ms = 1000u;
+    TEST_CHECK(!ts_claw_runtime_wifi_pending_take(
+        &pending, false, true, &has_ip, &netif));
+    TEST_CHECK(ts_claw_runtime_destroy_retry_due(
+        &fake.destroy_retry, fake.now_ms));
+    TEST_CHECK(fake_destroy(&fake) == TEST_ERROR);
+    TEST_CHECK(fake.destroy_count == 3u);
+    TEST_CHECK(fake.ml_exists && pending.pending);
+
+    fake.now_ms = 1999u;
+    TEST_CHECK(!ts_claw_runtime_destroy_retry_due(
+        &fake.destroy_retry, fake.now_ms));
+    fake.now_ms = 2000u;
+    TEST_CHECK(ts_claw_runtime_destroy_retry_due(
+        &fake.destroy_retry, fake.now_ms));
+    TEST_CHECK(fake_destroy(&fake) == ESP_OK);
+    ts_claw_runtime_destroy_retry_clear(&fake.destroy_retry);
+    TEST_CHECK(!fake.ml_exists && pending.pending);
+    TEST_CHECK(fake.destroy_count == 4u);
+    TEST_CHECK(fake.start_count == 0u);
+
+    fake.now_ms = 2001u;
+    TEST_CHECK(ts_claw_runtime_wifi_pending_take(
+        &pending, false, false, &has_ip, &netif));
+    if (fake.ml_exists) {
+        pin_count++;
+        rebind_count++;
+    } else {
+        TEST_CHECK(fake_start(&fake) == ESP_OK);
+    }
+    TEST_CHECK(has_ip && netif == (void *)(uintptr_t)2u);
+    TEST_CHECK(pin_count == 0u && rebind_count == 0u);
+    TEST_CHECK(fake.start_count == 1u);
+    TEST_CHECK(fake.ml_exists);
 }
 
 static void test_start_failure_rolls_back_once(void)
@@ -788,6 +857,7 @@ int main(void)
     test_clear_success_stops_after_connected();
     test_destroy_failure_rolls_back_once();
     test_two_destroy_timeouts_leave_one_cleanup_retry_until_success();
+    test_cleanup_precedes_deferred_wifi_up_replay();
     test_start_failure_rolls_back_once();
     test_desired_ip_failure_rolls_back_once();
     test_retire_failure_restores_old_desired_without_unsafe_destroy();

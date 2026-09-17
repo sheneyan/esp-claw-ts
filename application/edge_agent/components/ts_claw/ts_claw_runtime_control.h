@@ -108,7 +108,7 @@ bool ts_claw_runtime_wifi_pending_record(
     ts_claw_runtime_wifi_pending_t *pending, bool has_ip, void *netif);
 bool ts_claw_runtime_wifi_pending_take(
     ts_claw_runtime_wifi_pending_t *pending, bool runtime_active,
-    bool *has_ip, void **netif);
+    bool cleanup_owned, bool *has_ip, void **netif);
 void ts_claw_runtime_destroy_retry_schedule(
     ts_claw_runtime_destroy_retry_t *retry,
     ts_claw_runtime_destroy_retry_mode_t mode,

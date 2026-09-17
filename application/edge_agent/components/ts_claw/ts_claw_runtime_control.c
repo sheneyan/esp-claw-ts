@@ -26,10 +26,11 @@ bool ts_claw_runtime_wifi_pending_record(
 
 bool ts_claw_runtime_wifi_pending_take(
     ts_claw_runtime_wifi_pending_t *pending, bool runtime_active,
-    bool *has_ip, void **netif)
+    bool cleanup_owned, bool *has_ip, void **netif)
 {
     if (pending == NULL || has_ip == NULL || netif == NULL ||
-        !pending->pending || (pending->has_ip && runtime_active)) {
+        !pending->pending ||
+        (pending->has_ip && (runtime_active || cleanup_owned))) {
         return false;
     }
     *has_ip = pending->has_ip;

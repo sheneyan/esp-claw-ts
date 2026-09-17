@@ -655,7 +655,8 @@ static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
     if (s_ts.resource_guard.stopped) {
         return;
     }
-    if (ts_claw_runtime_control_is_active(&s_ts.runtime_control)) {
+    if (ts_claw_runtime_control_is_active(&s_ts.runtime_control) ||
+        s_ts.destroy_retry.mode != TS_CLAW_RUNTIME_DESTROY_RETRY_NONE) {
         return;
     }
     if (s_ts.ml == NULL) {
@@ -708,6 +709,7 @@ static void worker_consume_pending_wifi(void)
     handle_wifi = ts_claw_runtime_wifi_pending_take(
         &s_ts.wifi_pending,
         ts_claw_runtime_control_is_active(&s_ts.runtime_control),
+        s_ts.destroy_retry.mode != TS_CLAW_RUNTIME_DESTROY_RETRY_NONE,
         &has_ip, &pending_netif);
     sta_netif = (esp_netif_t *)pending_netif;
     xSemaphoreGive(s_ts.lock);
@@ -721,8 +723,9 @@ static bool worker_wifi_up_is_deferred(bool runtime_active)
 {
     bool deferred = false;
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    deferred = runtime_active && s_ts.wifi_pending.pending &&
-               s_ts.wifi_pending.has_ip;
+    deferred = s_ts.wifi_pending.pending && s_ts.wifi_pending.has_ip &&
+               (runtime_active || s_ts.destroy_retry.mode !=
+                                      TS_CLAW_RUNTIME_DESTROY_RETRY_NONE);
     xSemaphoreGive(s_ts.lock);
     return deferred;
 }
