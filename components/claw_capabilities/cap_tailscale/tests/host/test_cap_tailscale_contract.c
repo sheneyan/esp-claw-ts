@@ -222,8 +222,12 @@ static void test_selector_normalization_and_cgnat_range(void)
     TEST_CHECK(cap_tailscale_validate_selector("127.1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_validate_selector("0xC0A80101", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_validate_selector("2130706433", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("127.0x1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("192.0xa80101", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_validate_selector("node.example", selector, sizeof(selector)) == ESP_OK);
     TEST_CHECK(strcmp(selector, "node.example") == 0);
+    TEST_CHECK(cap_tailscale_validate_selector("edge-01.example", selector, sizeof(selector)) == ESP_OK);
+    TEST_CHECK(strcmp(selector, "edge-01.example") == 0);
 
     TEST_CHECK(cap_tailscale_selector_is_cgnat("100.64.0.1"));
     TEST_CHECK(cap_tailscale_selector_is_cgnat("100.127.255.254"));

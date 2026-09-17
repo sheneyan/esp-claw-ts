@@ -280,16 +280,30 @@ static bool cap_tailscale_selector_is_legacy_numeric_form(const char *selector)
     bool saw_dot = false;
     const char *cursor;
 
-    if (selector[0] == '0' && (selector[1] == 'x' || selector[1] == 'X')) {
-        return true;
-    }
-    for (cursor = selector; *cursor != '\0'; ++cursor) {
+    for (cursor = selector; *cursor != '\0';) {
+        const char *token_start = cursor;
+        bool hex_prefixed;
+
+        while (*cursor != '\0' && *cursor != '.') {
+            ++cursor;
+        }
+        if (cursor == token_start) {
+            return false;
+        }
+        hex_prefixed = cursor - token_start >= 2 && token_start[0] == '0' &&
+                       (token_start[1] == 'x' || token_start[1] == 'X');
+        if (!hex_prefixed) {
+            const char *token;
+
+            for (token = token_start; token < cursor; ++token) {
+                if (*token < '0' || *token > '9') {
+                    return false;
+                }
+            }
+        }
         if (*cursor == '.') {
             saw_dot = true;
-            continue;
-        }
-        if (*cursor < '0' || *cursor > '9') {
-            return false;
+            ++cursor;
         }
     }
     return saw_dot || selector[0] != '\0';

@@ -310,10 +310,18 @@ static void test_selector_and_provider_result_boundaries(void)
                        output, sizeof(output)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(strstr(output, "invalid_input") != NULL);
     TEST_CHECK(s_set_calls == set_before);
+    TEST_CHECK(execute(2, "{\"node\":\"127.0x1\",\"user_confirmed\":true}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(execute(2, "{\"node\":\"192.0xa80101\",\"user_confirmed\":true}",
+                       output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(s_set_calls == set_before);
     TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"user_confirmed\":true}",
                        output, sizeof(output)) == ESP_OK);
     TEST_CHECK(s_set_calls == set_before + 1);
     TEST_CHECK(strcmp(s_last_selector, "node.example") == 0);
+    TEST_CHECK(execute(2, "{\"node\":\"edge-01.example\",\"user_confirmed\":true}",
+                       output, sizeof(output)) == ESP_OK);
+    TEST_CHECK(strcmp(s_last_selector, "edge-01.example") == 0);
 
     s_set_semantic_rejection = true;
     TEST_CHECK(execute(2, "{\"node\":\"node.example\",\"user_confirmed\":true}",
