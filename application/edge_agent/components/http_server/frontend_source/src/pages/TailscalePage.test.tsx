@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
 import { createStore } from 'solid-js/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
   fetchStatus: vi.fn(),
   fetchExitNodes: vi.fn(),
+  fetchConfigGroup: vi.fn(),
   setExitNode: vi.fn(),
   clearExitNode: vi.fn(),
 }));
@@ -21,12 +22,15 @@ const config = vi.hoisted(() => ({
   },
   loaded: true,
   reload: vi.fn(),
+  save: vi.fn(),
+  discard: vi.fn(),
 }));
 
 vi.mock('../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/client')>()),
   fetchTailscaleStatus: api.fetchStatus,
   fetchTailscaleExitNodes: api.fetchExitNodes,
+  fetchConfigGroups: api.fetchConfigGroup,
   setTailscaleExitNode: api.setExitNode,
   clearTailscaleExitNode: api.clearExitNode,
 }));
@@ -43,17 +47,24 @@ vi.mock('../state/configTab', () => ({
     toForm: (value: typeof config.values) => Record<string, unknown>;
   }) => {
     const [form, setForm] = createStore(options.toForm(config.values));
-    const baseline = JSON.stringify(form);
+    let baseline = { ...form };
     return {
       form,
       setForm,
-      dirty: () => JSON.stringify(form) !== baseline,
+      dirty: () => JSON.stringify(form) !== JSON.stringify(baseline),
       loading: () => !config.loaded,
       saving: () => false,
       error: () => null,
-      save: vi.fn(),
-      discard: vi.fn(),
+      save: config.save,
+      discard: () => {
+        config.discard();
+        setForm({ ...baseline });
+      },
       reload: () => config.reload(['tailscale']),
+      mergeLiveFields: (patch: Record<string, unknown>) => {
+        baseline = { ...baseline, ...patch };
+        setForm(patch);
+      },
     };
   },
 }));
@@ -98,11 +109,17 @@ const offlineNode = {
 describe('TailscalePage Exit Node control', () => {
   beforeEach(() => {
     config.loaded = true;
+    config.values.tailscale_hostname = 'esp-claw';
+    config.values.tailscale_auth_key = '';
+    config.values.tailscale_login_server = '';
     config.values.tailscale_exit_node = '';
     api.fetchStatus.mockResolvedValue(connectedStatus);
     api.fetchExitNodes.mockResolvedValue([]);
-    api.setExitNode.mockResolvedValue({ ok: true, persisted: true });
-    api.clearExitNode.mockResolvedValue({ ok: true, persisted: true });
+    api.fetchConfigGroup.mockImplementation(() =>
+      Promise.resolve({ tailscale_exit_node: config.values.tailscale_exit_node }),
+    );
+    api.setExitNode.mockResolvedValue({ ok: true, persisted: true, selected_ip: onlineNode.ip });
+    api.clearExitNode.mockResolvedValue({ ok: true, persisted: true, selected_ip: '' });
     config.reload.mockResolvedValue(undefined);
   });
 
@@ -144,12 +161,15 @@ describe('TailscalePage Exit Node control', () => {
 
     expect(await screen.findByLabelText('Exit Node')).toBeInTheDocument();
     expect(await screen.findByText('Exit Node list unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Exit Node list unavailable');
+    expect(screen.getByLabelText('Exit Node')).toHaveAttribute('aria-invalid', 'true');
     expect(screen.queryByText('No Exit Nodes available.')).not.toBeInTheDocument();
   });
 
   it('switches immediately, disables only while mutating, then refreshes runtime and config', async () => {
     let finishMutation: ((value: unknown) => void) | undefined;
     api.fetchExitNodes.mockResolvedValue([onlineNode]);
+    api.fetchConfigGroup.mockResolvedValue({ tailscale_exit_node: onlineNode.ip });
     api.setExitNode.mockReturnValue(
       new Promise((resolve) => {
         finishMutation = resolve;
@@ -162,27 +182,31 @@ describe('TailscalePage Exit Node control', () => {
     fireEvent.change(select, { target: { value: onlineNode.ip } });
     expect(api.setExitNode).toHaveBeenCalledWith(onlineNode.ip);
     expect(select).toBeDisabled();
-    expect(screen.getByText('Switching Exit Node…')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Switching Exit Node…');
 
-    finishMutation?.({ ok: true, persisted: true });
+    finishMutation?.({ ok: true, persisted: true, selected_ip: onlineNode.ip });
     await waitFor(() => expect(select).toBeEnabled());
+    expect(screen.getByRole('status')).toHaveTextContent('Exit Node selection updated.');
     expect(api.fetchStatus).toHaveBeenCalledTimes(2);
     expect(api.fetchExitNodes).toHaveBeenCalledTimes(2);
-    expect(config.reload).toHaveBeenCalledWith(['tailscale']);
+    expect(api.fetchConfigGroup).toHaveBeenCalledWith(['tailscale']);
   });
 
   it('clears the Exit Node immediately without showing restart-needed UI', async () => {
     config.values.tailscale_exit_node = onlineNode.ip;
     api.fetchExitNodes.mockResolvedValue([onlineNode]);
+    api.fetchConfigGroup.mockResolvedValue({ tailscale_exit_node: '' });
     render(() => <TailscalePage />);
     const select = (await screen.findByLabelText('Exit Node')) as HTMLSelectElement;
 
     fireEvent.change(select, { target: { value: '' } });
     await waitFor(() => expect(api.clearExitNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue('');
     expect(
       screen.getByRole('button', { name: 'Save Tab' }).parentElement?.textContent,
     ).not.toContain('Restart the device after saving to apply new settings');
-    expect(config.reload).toHaveBeenCalledWith(['tailscale']);
+    expect(api.fetchConfigGroup).toHaveBeenCalledWith(['tailscale']);
   });
 
   it('preserves the restart note for ordinary configuration edits', async () => {
@@ -195,6 +219,70 @@ describe('TailscalePage Exit Node control', () => {
       expect(screen.getByRole('button', { name: 'Save Tab' }).parentElement?.textContent).toContain(
         'Restart the device after saving to apply new settings',
       ),
+    );
+  });
+
+  it('preserves drafts and serializes Save and Discard during a live switch', async () => {
+    let finishMutation: ((value: unknown) => void) | undefined;
+    api.fetchExitNodes.mockResolvedValue([onlineNode]);
+    api.fetchConfigGroup.mockResolvedValue({
+      tailscale_exit_node: onlineNode.ip,
+      tailscale_hostname: 'server-host-that-must-not-replace-draft',
+      tailscale_login_server: 'https://server-control.example',
+    });
+    api.setExitNode.mockReturnValue(
+      new Promise((resolve) => {
+        finishMutation = resolve;
+      }),
+    );
+    render(() => <TailscalePage />);
+    const select = (await screen.findByLabelText('Exit Node')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: /racknerd/i });
+    const hostname = screen.getByLabelText('Device Hostname') as HTMLInputElement;
+    const authKey = screen.getByLabelText('Auth Key') as HTMLInputElement;
+    const loginServer = screen.getByLabelText('Login Server') as HTMLInputElement;
+
+    fireEvent.input(hostname, { target: { value: 'draft-host' } });
+    fireEvent.input(authKey, { target: { value: 'draft-auth-key' } });
+    fireEvent.input(loginServer, { target: { value: 'https://draft-control.example' } });
+    fireEvent.change(select, { target: { value: onlineNode.ip } });
+
+    const discardButton = screen.getByRole('button', { name: 'Discard' });
+    const savePanel = discardButton.parentElement!;
+    const saveButton = within(savePanel).getAllByRole('button')[1]!;
+    expect(saveButton).toBeDisabled();
+    expect(discardButton).toBeDisabled();
+    fireEvent.click(saveButton);
+    fireEvent.click(discardButton);
+    expect(config.save).not.toHaveBeenCalled();
+    expect(config.discard).not.toHaveBeenCalled();
+    finishMutation?.({ ok: true, persisted: true, selected_ip: onlineNode.ip });
+    await waitFor(() => expect(select).toBeEnabled());
+
+    expect(hostname).toHaveValue('draft-host');
+    expect(authKey).toHaveValue('draft-auth-key');
+    expect(loginServer).toHaveValue('https://draft-control.example');
+    expect(screen.getByRole('button', { name: 'Save Tab' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save Tab' }).parentElement).toHaveTextContent(
+      'Restart the device after saving to apply new settings',
+    );
+  });
+
+  it('keeps the confirmed selection when focused config verification fails', async () => {
+    api.fetchExitNodes.mockResolvedValue([onlineNode]);
+    api.fetchConfigGroup.mockRejectedValue(new Error('Config refresh failed'));
+    render(() => <TailscalePage />);
+    const select = (await screen.findByLabelText('Exit Node')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: /racknerd/i });
+
+    fireEvent.change(select, { target: { value: onlineNode.ip } });
+
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue(onlineNode.ip);
+    expect(screen.getByRole('status')).toHaveTextContent('Exit Node selection updated.');
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Saved selection could not be verified from configuration.',
     );
   });
 
@@ -218,8 +306,9 @@ describe('TailscalePage Exit Node control', () => {
     fireEvent.change(select, { target: { value: onlineNode.ip } });
 
     expect(await screen.findByText(/previous Exit Node was restored/i)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('previous Exit Node was restored');
     await waitFor(() => expect(select).toBeEnabled());
     expect(api.fetchStatus).toHaveBeenCalledTimes(2);
-    expect(config.reload).toHaveBeenCalledWith(['tailscale']);
+    expect(api.fetchConfigGroup).toHaveBeenCalledWith(['tailscale']);
   });
 });

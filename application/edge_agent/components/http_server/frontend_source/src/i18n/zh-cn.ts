@@ -129,6 +129,8 @@ export const zhCn: Dict = {
   tailscaleExitNodeUnavailable: '当前不可用',
   tailscaleExitNodeEmpty: '当前没有可用的 Exit Node。',
   tailscaleExitNodeSwitching: '正在切换 Exit Node…',
+  tailscaleExitNodeUpdated: 'Exit Node 选择已更新。',
+  tailscaleExitNodeSyncWarning: '已保存选择，但暂时无法从配置中完成校验。',
   tailscaleRollbackRecovered: '已恢复先前的 Exit Node。',
   tailscaleRollbackFailed: '回滚失败，请检查当前网络路由。',
   tailscaleMaxPeers: '最大节点数',

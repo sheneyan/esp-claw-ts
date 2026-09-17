@@ -132,6 +132,8 @@ export const en = {
   tailscaleExitNodeUnavailable: 'currently unavailable',
   tailscaleExitNodeEmpty: 'No Exit Nodes available.',
   tailscaleExitNodeSwitching: 'Switching Exit Node…',
+  tailscaleExitNodeUpdated: 'Exit Node selection updated.',
+  tailscaleExitNodeSyncWarning: 'Saved selection could not be verified from configuration.',
   tailscaleRollbackRecovered: 'The previous Exit Node was restored.',
   tailscaleRollbackFailed: 'Rollback failed; verify the active network route.',
   tailscaleMaxPeers: 'Maximum Peers',

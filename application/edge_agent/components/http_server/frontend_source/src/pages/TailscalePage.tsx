@@ -1,6 +1,16 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  type Component,
+} from 'solid-js';
 import {
   clearTailscaleExitNode,
+  fetchConfigGroups,
   fetchTailscaleExitNodes,
   fetchTailscaleStatus,
   setTailscaleExitNode,
@@ -85,16 +95,32 @@ export const TailscalePage: Component = () => {
     }),
   });
   const [status, setStatus] = createSignal<TailscaleStatus | null>(null);
+  const [selectedExitNode, setSelectedExitNode] = createSignal(tab.form.tailscale_exit_node);
   const [exitNodes, setExitNodes] = createSignal<TailscaleExitNode[]>([]);
   const [exitNodesLoaded, setExitNodesLoaded] = createSignal(false);
   const [runtimeError, setRuntimeError] = createSignal<string | null>(null);
   const [exitNodesError, setExitNodesError] = createSignal<string | null>(null);
   const [mutationError, setMutationError] = createSignal<string | null>(null);
+  const [mutationNotice, setMutationNotice] = createSignal<string | null>(null);
+  const [syncError, setSyncError] = createSignal<string | null>(null);
   const [mutatingExitNode, setMutatingExitNode] = createSignal(false);
   const [refreshing, setRefreshing] = createSignal(false);
   const [validationError, setValidationError] = createSignal<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let requestController: AbortController | undefined;
+  let selectedExitInitialized = isGroupLoaded('tailscale');
+
+  createEffect(() => {
+    const configuredExitNode = appConfig().tailscale_exit_node;
+    if (
+      !selectedExitInitialized &&
+      isGroupLoaded('tailscale') &&
+      configuredExitNode !== undefined
+    ) {
+      setSelectedExitNode(configuredExitNode);
+      selectedExitInitialized = true;
+    }
+  });
 
   const refreshRuntime = async (interactive = false) => {
     // Let an in-flight request finish instead of having the background timer
@@ -150,7 +176,7 @@ export const TailscalePage: Component = () => {
     appConfig().tailscale_auth_key_set ?? status()?.auth_key_set ?? false;
 
   const selectedExitIsListed = createMemo(() =>
-    exitNodes().some((node) => node.ip === tab.form.tailscale_exit_node),
+    exitNodes().some((node) => node.ip === selectedExitNode()),
   );
 
   const peersText = () => {
@@ -166,26 +192,50 @@ export const TailscalePage: Component = () => {
       : `${error.message} ${t('tailscaleRollbackFailed')}`;
   };
 
+  const refreshExitNodeConfig = async () => {
+    const config = await fetchConfigGroups(['tailscale']);
+    if (typeof config.tailscale_exit_node !== 'string') {
+      throw new Error('Tailscale Exit Node configuration is missing');
+    }
+    const patch = { tailscale_exit_node: config.tailscale_exit_node };
+    patchConfigLocal(patch);
+    tab.mergeLiveFields(patch);
+    setSelectedExitNode(config.tailscale_exit_node);
+  };
+
   const handleExitNodeChange = async (nextNode: string) => {
-    if (mutatingExitNode()) return;
+    if (mutatingExitNode() || tab.saving()) return;
     setMutatingExitNode(true);
     setMutationError(null);
+    setMutationNotice(null);
+    setSyncError(null);
+    let operationSucceeded = false;
     try {
+      let operation: TailscaleOperation;
       if (nextNode) {
-        await setTailscaleExitNode(nextNode);
+        operation = await setTailscaleExitNode(nextNode);
       } else {
-        await clearTailscaleExitNode();
+        operation = await clearTailscaleExitNode();
       }
+      operationSucceeded = true;
+      setSelectedExitNode(nextNode ? operation.selected_ip || nextNode : '');
+      setMutationNotice(t('tailscaleExitNodeUpdated') as string);
     } catch (error) {
       setMutationError(mutationErrorMessage(error as Error & { operation?: TailscaleOperation }));
     } finally {
-      await Promise.allSettled([refreshRuntime(true), tab.reload()]);
+      const [, configResult] = await Promise.allSettled([
+        refreshRuntime(true),
+        refreshExitNodeConfig(),
+      ]);
+      if (configResult.status === 'rejected' && operationSucceeded) {
+        setSyncError(t('tailscaleExitNodeSyncWarning') as string);
+      }
       setMutatingExitNode(false);
     }
   };
 
   const handleSave = async () => {
-    if (!isGroupLoaded('tailscale')) return;
+    if (!isGroupLoaded('tailscale') || mutatingExitNode()) return;
 
     const maxPeers = tab.form.tailscale_max_peers.trim();
     if (!/^[1-9]\d*$/.test(maxPeers) || Number(maxPeers) > 64) {
@@ -307,20 +357,17 @@ export const TailscalePage: Component = () => {
             </Show>
             <SelectInput
               label={t('tailscaleExitNode')}
-              hint={
-                mutatingExitNode()
-                  ? (t('tailscaleExitNodeSwitching') as string)
-                  : (t('tailscaleExitNodeHint') as string)
-              }
-              error={mutationError() ?? exitNodesError() ?? undefined}
-              value={tab.form.tailscale_exit_node}
-              disabled={mutatingExitNode()}
+              hint={t('tailscaleExitNodeHint') as string}
+              value={selectedExitNode()}
+              disabled={mutatingExitNode() || tab.saving()}
+              aria-describedby="tailscale-exit-node-feedback"
+              aria-invalid={mutationError() || exitNodesError() ? 'true' : undefined}
               onChange={(event) => void handleExitNodeChange(event.currentTarget.value)}
             >
               <option value="">{t('tailscaleExitNodeNone') as string}</option>
-              <Show when={tab.form.tailscale_exit_node && !selectedExitIsListed()}>
-                <option value={tab.form.tailscale_exit_node} disabled>
-                  {tab.form.tailscale_exit_node} · {t('tailscaleExitNodeUnavailable') as string}
+              <Show when={selectedExitNode() && !selectedExitIsListed()}>
+                <option value={selectedExitNode()} disabled>
+                  {selectedExitNode()} · {t('tailscaleExitNodeUnavailable') as string}
                 </option>
               </Show>
               <For each={exitNodes()}>
@@ -331,11 +378,40 @@ export const TailscalePage: Component = () => {
                 )}
               </For>
             </SelectInput>
-            <Show when={exitNodesLoaded() && exitNodes().length === 0 && !exitNodesError()}>
-              <p class="text-[0.75rem] text-[var(--color-text-muted)] sm:col-span-2">
-                {t('tailscaleExitNodeEmpty')}
-              </p>
-            </Show>
+            <div id="tailscale-exit-node-feedback" class="sm:col-span-2">
+              <Show when={mutatingExitNode()}>
+                <p
+                  role="status"
+                  aria-live="polite"
+                  class="text-[0.75rem] text-[var(--color-text-muted)]"
+                >
+                  {t('tailscaleExitNodeSwitching')}
+                </p>
+              </Show>
+              <Show when={!mutatingExitNode() && mutationNotice()}>
+                <p
+                  role="status"
+                  aria-live="polite"
+                  class="text-[0.75rem] text-[var(--color-text-muted)]"
+                >
+                  {mutationNotice()}
+                </p>
+              </Show>
+              <Show when={mutationError() ?? exitNodesError() ?? syncError()}>
+                <p
+                  role="alert"
+                  aria-live="assertive"
+                  class="text-[0.75rem] text-[var(--color-danger)]"
+                >
+                  {mutationError() ?? exitNodesError() ?? syncError()}
+                </p>
+              </Show>
+              <Show when={exitNodesLoaded() && exitNodes().length === 0 && !exitNodesError()}>
+                <p class="text-[0.75rem] text-[var(--color-text-muted)]">
+                  {t('tailscaleExitNodeEmpty')}
+                </p>
+              </Show>
+            </div>
             <Show when={isGroupLoaded('tailscale')}>
               <TextInput
                 type="number"
@@ -356,9 +432,10 @@ export const TailscalePage: Component = () => {
       <Show when={isGroupLoaded('tailscale')}>
         <SavePanel
           dirty={tab.dirty()}
-          saving={tab.saving()}
+          saving={tab.saving() || mutatingExitNode()}
           onSave={() => handleSave().catch(() => undefined)}
           onDiscard={() => {
+            if (mutatingExitNode()) return;
             setValidationError(null);
             tab.discard();
           }}

@@ -32,6 +32,7 @@ export type ConfigTabApi<T extends object> = {
   save: () => Promise<void>;
   discard: () => void;
   reload: () => Promise<void>;
+  mergeLiveFields: (patch: Partial<T>) => void;
 };
 
 export function createConfigTab<T extends object>(options: ConfigTabOptions<T>): ConfigTabApi<T> {
@@ -135,6 +136,14 @@ export function createConfigTab<T extends object>(options: ConfigTabOptions<T>):
     setBaselineTick((value) => value + 1);
   };
 
+  const mergeLiveFields = (patch: Partial<T>) => {
+    batch(() => {
+      baseline = { ...baseline, ...clone(patch) };
+      setForm(reconcile({ ...(form as T), ...patch } as T));
+      setBaselineTick((value) => value + 1);
+    });
+  };
+
   return {
     form,
     setForm,
@@ -145,6 +154,7 @@ export function createConfigTab<T extends object>(options: ConfigTabOptions<T>):
     save,
     discard,
     reload,
+    mergeLiveFields,
   };
 }
 
