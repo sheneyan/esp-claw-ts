@@ -62,7 +62,7 @@ esp_err_t cap_tailscale_normalize_selector(const char *selector,
         return ESP_ERR_INVALID_ARG;
     }
 
-    memcpy(out_selector, start, length);
+    memmove(out_selector, start, length);
     out_selector[length] = '\0';
     return ESP_OK;
 }
@@ -71,16 +71,21 @@ static bool parse_ipv4_octet(const char **cursor, unsigned int *out_value)
 {
     const char *value_start = *cursor;
     unsigned int value = 0;
+    size_t digit_count = 0;
 
     while (**cursor >= '0' && **cursor <= '9') {
+        if (digit_count == 3) {
+            return false;
+        }
         value = value * 10U + (unsigned int)(**cursor - '0');
         if (value > 255U) {
             return false;
         }
+        ++digit_count;
         ++*cursor;
     }
 
-    if (*cursor == value_start) {
+    if (digit_count == 0 || (digit_count > 1 && *value_start == '0')) {
         return false;
     }
 

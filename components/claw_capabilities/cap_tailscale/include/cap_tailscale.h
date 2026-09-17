@@ -77,6 +77,15 @@ typedef struct {
 } cap_tailscale_mutation_result_t;
 
 /**
+ * cap_tailscale_set_provider() copies this descriptor. The callback pointers
+ * and ctx must remain valid until the provider is replaced or the capability
+ * is no longer used.
+ *
+ * Each callback initializes every output it claims to return and
+ * NUL-terminates returned strings. list_exit_nodes returns a nonnegative count
+ * of entries written, never greater than capacity, or a negative value on
+ * failure. Callers must handle a negative value before casting or clamping it.
+ *
  * The set and clear callbacks return transport/runtime failures as esp_err_t.
  * For a request that executes but is rejected semantically, return ESP_OK and
  * describe that rejection in out with ok set to false.

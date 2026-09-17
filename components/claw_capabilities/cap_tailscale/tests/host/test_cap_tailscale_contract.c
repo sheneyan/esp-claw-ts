@@ -1,10 +1,18 @@
 #include "cap_tailscale_contract.h"
 
-#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define TEST_CHECK(condition) assert(condition)
+static void test_check(bool condition, const char *expression, const char *file, int line)
+{
+    if (!condition) {
+        fprintf(stderr, "%s:%d: test failed: %s\n", file, line, expression);
+        exit(EXIT_FAILURE);
+    }
+}
+
+#define TEST_CHECK(condition) test_check((condition), #condition, __FILE__, __LINE__)
 #define STATIC_ASSERT(name, condition) typedef char static_assert_##name[(condition) ? 1 : -1]
 
 STATIC_ASSERT(derp_rtt_uses_uint16, sizeof(((cap_tailscale_derp_rtt_t *)0)->rtt_ms) == sizeof(uint16_t));
@@ -166,12 +174,30 @@ static void test_selector_normalization_and_cgnat_range(void)
     char too_long[CAP_TAILSCALE_IP_LEN + 1];
     char oversized[CAP_TAILSCALE_HOSTNAME_LEN + 1];
     char hostname_selector[CAP_TAILSCALE_HOSTNAME_LEN];
+    char max_length_selector[CAP_TAILSCALE_HOSTNAME_LEN];
+    char in_place_selector[] = " \t100.64.0.1 \n";
+    char overlapping_selector[] = "  node.example  ";
 
     TEST_CHECK(cap_tailscale_normalize_selector(NULL, selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_normalize_selector("node", NULL, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_normalize_selector("node", selector, 0) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_normalize_selector("", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_normalize_selector(" \t ", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(cap_tailscale_normalize_selector("  100.64.0.1\t", selector, sizeof(selector)) == ESP_OK);
     TEST_CHECK(strcmp(selector, "100.64.0.1") == 0);
+    TEST_CHECK(selector[strlen("100.64.0.1")] == '\0');
+
+    TEST_CHECK(cap_tailscale_normalize_selector(in_place_selector,
+                                                 in_place_selector,
+                                                 sizeof(in_place_selector)) == ESP_OK);
+    TEST_CHECK(strcmp(in_place_selector, "100.64.0.1") == 0);
+    TEST_CHECK(in_place_selector[strlen("100.64.0.1")] == '\0');
+
+    TEST_CHECK(cap_tailscale_normalize_selector(overlapping_selector,
+                                                 overlapping_selector + 1,
+                                                 sizeof(overlapping_selector) - 1) == ESP_OK);
+    TEST_CHECK(strcmp(overlapping_selector + 1, "node.example") == 0);
+    TEST_CHECK(overlapping_selector[1 + strlen("node.example")] == '\0');
 
     memset(too_long, '1', sizeof(too_long) - 1);
     too_long[sizeof(too_long) - 1] = '\0';
@@ -179,14 +205,26 @@ static void test_selector_normalization_and_cgnat_range(void)
     memset(oversized, 'a', sizeof(oversized) - 1);
     oversized[sizeof(oversized) - 1] = '\0';
     TEST_CHECK(cap_tailscale_normalize_selector(oversized, hostname_selector, sizeof(hostname_selector)) == ESP_ERR_INVALID_ARG);
+    memset(max_length_selector, 'a', sizeof(max_length_selector) - 1);
+    max_length_selector[sizeof(max_length_selector) - 1] = '\0';
+    TEST_CHECK(cap_tailscale_normalize_selector(max_length_selector,
+                                                 hostname_selector,
+                                                 sizeof(hostname_selector)) == ESP_OK);
+    TEST_CHECK(hostname_selector[CAP_TAILSCALE_HOSTNAME_LEN - 1] == '\0');
     TEST_CHECK(cap_tailscale_normalize_selector("100.64.0.1", selector, 1) == ESP_ERR_INVALID_ARG);
 
     TEST_CHECK(cap_tailscale_selector_is_cgnat("100.64.0.1"));
     TEST_CHECK(cap_tailscale_selector_is_cgnat("100.127.255.254"));
+    TEST_CHECK(cap_tailscale_selector_is_cgnat("100.64.0.0"));
+    TEST_CHECK(cap_tailscale_selector_is_cgnat("100.127.255.255"));
     TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.128.0.1"));
     TEST_CHECK(!cap_tailscale_selector_is_cgnat("192.168.1.1"));
     TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.64.0"));
     TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.64.0.1x"));
+    TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.64.0.1.1"));
+    TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.064.0.1"));
+    TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.64.00.1"));
+    TEST_CHECK(!cap_tailscale_selector_is_cgnat("100.64.0.000000000000001"));
 }
 
 static void test_count_bounds(void)
@@ -194,9 +232,11 @@ static void test_count_bounds(void)
     TEST_CHECK(cap_tailscale_bound_exit_node_count(0) == 0);
     TEST_CHECK(cap_tailscale_bound_exit_node_count(CAP_TAILSCALE_MAX_EXIT_NODES) == CAP_TAILSCALE_MAX_EXIT_NODES);
     TEST_CHECK(cap_tailscale_bound_exit_node_count(CAP_TAILSCALE_MAX_EXIT_NODES + 1) == CAP_TAILSCALE_MAX_EXIT_NODES);
+    TEST_CHECK(cap_tailscale_bound_exit_node_count(SIZE_MAX) == CAP_TAILSCALE_MAX_EXIT_NODES);
     TEST_CHECK(cap_tailscale_bound_derp_rtt_count(0) == 0);
     TEST_CHECK(cap_tailscale_bound_derp_rtt_count(CAP_TAILSCALE_MAX_DERP_RTTS) == CAP_TAILSCALE_MAX_DERP_RTTS);
     TEST_CHECK(cap_tailscale_bound_derp_rtt_count(CAP_TAILSCALE_MAX_DERP_RTTS + 1) == CAP_TAILSCALE_MAX_DERP_RTTS);
+    TEST_CHECK(cap_tailscale_bound_derp_rtt_count(SIZE_MAX) == CAP_TAILSCALE_MAX_DERP_RTTS);
 }
 
 int main(void)
