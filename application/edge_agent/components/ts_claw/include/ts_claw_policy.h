@@ -9,6 +9,8 @@ extern "C" {
 #endif
 
 typedef enum {
+    /* Reserved for route hooks to delegate to lwIP's default route. */
+    /* The pure classifier below never returns this value. */
     TS_ROUTE_DEFAULT,
     TS_ROUTE_STA,
     TS_ROUTE_WG,
@@ -34,9 +36,13 @@ void ts_exit_policy_set_tunnel(ts_exit_policy_t *policy, bool tunnel_up);
 void ts_exit_policy_on_probe(ts_exit_policy_t *policy, bool success);
 bool ts_exit_policy_routes_public(const ts_exit_policy_t *policy);
 
-bool ts_route_is_cgnat(uint32_t ipv4);
-bool ts_route_is_private(uint32_t ipv4);
-ts_route_target_t ts_route_classify(uint32_t ipv4, bool exit_active);
+/*
+ * IP inputs are in CPU host byte order. Callers using lwIP's
+ * ip4_addr_get_u32() must apply lwip_ntohl() before calling these functions.
+ */
+bool ts_route_is_cgnat(uint32_t host_order_ip);
+bool ts_route_is_private(uint32_t host_order_ip);
+ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active);
 
 #ifdef __cplusplus
 }

@@ -6,9 +6,9 @@ enum {
     TS_EXIT_PROBE_THRESHOLD = 3,
 };
 
-static bool address_matches(uint32_t ipv4, uint32_t network, uint32_t mask)
+static bool address_matches(uint32_t host_order_ip, uint32_t network, uint32_t mask)
 {
-    return (ipv4 & mask) == network;
+    return (host_order_ip & mask) == network;
 }
 
 void ts_exit_policy_init(ts_exit_policy_t *policy, bool configured)
@@ -27,6 +27,13 @@ void ts_exit_policy_init(ts_exit_policy_t *policy, bool configured)
 void ts_exit_policy_set_tunnel(ts_exit_policy_t *policy, bool tunnel_up)
 {
     if (policy == NULL || !policy->configured) {
+        return;
+    }
+
+    if (policy->tunnel_up == tunnel_up) {
+        if (!tunnel_up) {
+            policy->state = TS_EXIT_FALLBACK;
+        }
         return;
     }
 
@@ -73,24 +80,24 @@ bool ts_exit_policy_routes_public(const ts_exit_policy_t *policy)
     return policy != NULL && policy->state == TS_EXIT_ACTIVE;
 }
 
-bool ts_route_is_cgnat(uint32_t ipv4)
+bool ts_route_is_cgnat(uint32_t host_order_ip)
 {
-    return address_matches(ipv4, 0x64400000u, 0xFFC00000u);
+    return address_matches(host_order_ip, 0x64400000u, 0xFFC00000u);
 }
 
-bool ts_route_is_private(uint32_t ipv4)
+bool ts_route_is_private(uint32_t host_order_ip)
 {
-    return address_matches(ipv4, 0x0A000000u, 0xFF000000u) ||
-           address_matches(ipv4, 0xAC100000u, 0xFFF00000u) ||
-           address_matches(ipv4, 0xC0A80000u, 0xFFFF0000u);
+    return address_matches(host_order_ip, 0x0A000000u, 0xFF000000u) ||
+           address_matches(host_order_ip, 0xAC100000u, 0xFFF00000u) ||
+           address_matches(host_order_ip, 0xC0A80000u, 0xFFFF0000u);
 }
 
-ts_route_target_t ts_route_classify(uint32_t ipv4, bool exit_active)
+ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)
 {
-    if (ts_route_is_cgnat(ipv4)) {
+    if (ts_route_is_cgnat(host_order_ip)) {
         return TS_ROUTE_WG;
     }
-    if (ts_route_is_private(ipv4)) {
+    if (ts_route_is_private(host_order_ip)) {
         return TS_ROUTE_STA;
     }
     return exit_active ? TS_ROUTE_WG : TS_ROUTE_STA;
