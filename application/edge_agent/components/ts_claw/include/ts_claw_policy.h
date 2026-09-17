@@ -66,6 +66,9 @@ void ts_resource_guard_retry_completed(ts_resource_guard_t *guard,
                                        uint64_t now_ms,
                                        bool succeeded);
 
+uint64_t ts_start_retry_schedule(uint64_t now_ms);
+bool ts_start_retry_due(uint64_t next_retry_ms, uint64_t now_ms);
+
 #ifdef __cplusplus
 }
 #endif

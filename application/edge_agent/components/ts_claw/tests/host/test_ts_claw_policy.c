@@ -235,6 +235,17 @@ static void test_resource_guard_failed_retry_waits_before_retrying_again(void)
     TEST_CHECK(!guard.stopped);
 }
 
+static void test_start_retry_waits_thirty_seconds(void)
+{
+    const uint64_t retry_at = ts_start_retry_schedule(1234u);
+
+    TEST_CHECK(retry_at == 31234u);
+    TEST_CHECK(!ts_start_retry_due(0u, UINT64_MAX));
+    TEST_CHECK(!ts_start_retry_due(retry_at, 31233u));
+    TEST_CHECK(ts_start_retry_due(retry_at, 31234u));
+    TEST_CHECK(ts_start_retry_due(retry_at, 40000u));
+}
+
 int main(void)
 {
     test_route_classification();
@@ -248,6 +259,7 @@ int main(void)
     test_resource_guard_thresholds_and_recovery();
     test_resource_guard_healthy_sample_resets_before_stop();
     test_resource_guard_failed_retry_waits_before_retrying_again();
+    test_start_retry_waits_thirty_seconds();
 
     puts("ts_claw_policy: all tests passed");
     return 0;

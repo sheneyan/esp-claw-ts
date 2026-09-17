@@ -58,6 +58,7 @@ typedef struct {
     uint64_t pin_next_attempt_ms;
     uint64_t pin_deadline_ms;
     uint64_t error_since_ms;
+    uint64_t next_start_retry_ms;
     bool upstream_pinned;
     char auth_key[TS_CLAW_AUTH_KEY_LEN];
     char hostname[TS_CLAW_HOSTNAME_LEN];
@@ -68,6 +69,8 @@ typedef struct {
 
 static const char *TAG = "ts_claw";
 static ts_claw_context_t s_ts;
+
+static esp_err_t send_sync_event(ts_event_t *event);
 
 static uint64_t now_ms(void)
 {
@@ -222,24 +225,45 @@ static esp_err_t worker_start_microlink(void)
     s_ts.pin_deadline_ms = current_ms + TS_CLAW_PIN_TIMEOUT_MS;
     s_ts.upstream_pinned = false;
     s_ts.error_since_ms = 0u;
+    s_ts.next_start_retry_ms = 0u;
     ts_claw_route_hook_set_upstream_pinned(false);
     set_last_error("");
     return ESP_OK;
 }
 
+static bool worker_start_is_allowed(void)
+{
+    return s_ts.config.enabled && worker_wifi_snapshot(NULL) &&
+           !s_ts.resource_guard.stopped;
+}
+
+static void worker_schedule_start_retry(uint64_t current_ms)
+{
+    s_ts.next_start_retry_ms = worker_start_is_allowed() ?
+        ts_start_retry_schedule(current_ms) : 0u;
+}
+
+static esp_err_t worker_start_with_retry(uint64_t current_ms)
+{
+    esp_err_t err = worker_start_microlink();
+    if (err != ESP_OK) {
+        worker_schedule_start_retry(current_ms);
+    }
+    return err;
+}
+
 static void worker_restart_microlink(void)
 {
     worker_destroy_microlink();
-    if (worker_wifi_snapshot(NULL) && !s_ts.resource_guard.stopped) {
-        (void)worker_start_microlink();
+    if (worker_start_is_allowed()) {
+        (void)worker_start_with_retry(now_ms());
+    } else {
+        s_ts.next_start_retry_ms = 0u;
     }
 }
 
-static void worker_handle_wifi_changed(void)
+static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
 {
-    esp_netif_t *sta_netif = NULL;
-    const bool has_ip = worker_wifi_snapshot(&sta_netif);
-
     if (!has_ip) {
         if (s_ts.ml != NULL) {
             (void)microlink_pin_wg_output_netif(s_ts.ml, NULL);
@@ -247,6 +271,7 @@ static void worker_handle_wifi_changed(void)
         s_ts.upstream_pinned = false;
         s_ts.pin_next_attempt_ms = 0u;
         s_ts.pin_deadline_ms = 0u;
+        s_ts.next_start_retry_ms = 0u;
         xSemaphoreTake(s_ts.lock, portMAX_DELAY);
         ts_exit_policy_set_tunnel(&s_ts.exit_policy, false);
         s_ts.status.exit_state = s_ts.exit_policy.state;
@@ -261,7 +286,7 @@ static void worker_handle_wifi_changed(void)
         return;
     }
     if (s_ts.ml == NULL) {
-        (void)worker_start_microlink();
+        (void)worker_start_with_retry(now_ms());
         return;
     }
     struct netif *upstream = sta_netif != NULL ?
@@ -294,6 +319,40 @@ static void worker_handle_wifi_changed(void)
         ESP_LOGW(TAG, "microlink_rebind failed: %s; restarting", esp_err_to_name(err));
         worker_restart_microlink();
     }
+}
+
+static void worker_consume_pending_wifi(void)
+{
+    bool handle_wifi = false;
+    bool has_ip = false;
+    esp_netif_t *sta_netif = NULL;
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    if (s_ts.wifi_event_pending) {
+        s_ts.wifi_event_pending = false;
+        handle_wifi = true;
+        has_ip = s_ts.wifi_has_ip;
+        sta_netif = s_ts.sta_netif;
+    }
+    xSemaphoreGive(s_ts.lock);
+
+    if (handle_wifi) {
+        worker_handle_wifi_changed(has_ip, sta_netif);
+    }
+}
+
+static void worker_try_start_retry(uint64_t current_ms)
+{
+    if (!ts_start_retry_due(s_ts.next_start_retry_ms, current_ms)) {
+        return;
+    }
+    if (s_ts.ml != NULL || !worker_start_is_allowed()) {
+        s_ts.next_start_retry_ms = 0u;
+        return;
+    }
+
+    s_ts.next_start_retry_ms = 0u;
+    (void)worker_start_with_retry(current_ms);
 }
 
 static void worker_try_pin_upstream(uint64_t current_ms)
@@ -412,6 +471,7 @@ static void worker_sample_resources(uint64_t current_ms)
     ts_resource_guard_action_t action = ts_resource_guard_sample(
         &s_ts.resource_guard, current_ms, internal_free, internal_largest);
     if (action == TS_RESOURCE_GUARD_STOP) {
+        s_ts.next_start_retry_ms = 0u;
         worker_destroy_microlink();
         set_last_error("resource guard stopped tailscale");
     } else if (action == TS_RESOURCE_GUARD_RETRY) {
@@ -451,17 +511,19 @@ static void worker_handle_event(const ts_event_t *event)
 
     switch (event->type) {
     case TS_EVENT_WIFI_CHANGED:
+        worker_consume_pending_wifi();
         break;
     case TS_EVENT_GET_EXIT_NODES:
         result = worker_get_exit_nodes(event->nodes, event->node_capacity,
                                        event->node_count);
         break;
     case TS_EVENT_FACTORY_RESET:
+        s_ts.next_start_retry_ms = 0u;
         worker_destroy_microlink();
         result = microlink_factory_reset();
         if (result == ESP_OK && s_ts.config.enabled && worker_wifi_snapshot(NULL) &&
             !s_ts.resource_guard.stopped) {
-            result = worker_start_microlink();
+            result = worker_start_with_retry(now_ms());
         }
         break;
     default:
@@ -486,18 +548,10 @@ static void ts_claw_worker(void *arg)
             worker_handle_event(&event);
         }
 
-        bool handle_wifi = false;
-        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-        if (s_ts.wifi_event_pending) {
-            s_ts.wifi_event_pending = false;
-            handle_wifi = true;
-        }
-        xSemaphoreGive(s_ts.lock);
-        if (handle_wifi) {
-            worker_handle_wifi_changed();
-        }
+        worker_consume_pending_wifi();
 
         const uint64_t current_ms = now_ms();
+        worker_try_start_retry(current_ms);
         worker_try_pin_upstream(current_ms);
         worker_refresh_status();
         worker_check_error(current_ms);
@@ -572,11 +626,18 @@ esp_err_t ts_claw_notify_wifi(bool sta_has_ip, esp_netif_t *sta_netif)
     }
     xSemaphoreGive(s_ts.lock);
 
+    const ts_event_t event = {.type = TS_EVENT_WIFI_CHANGED};
+    if (!sta_has_ip) {
+        if (xTaskGetCurrentTaskHandle() == s_ts.worker) {
+            worker_consume_pending_wifi();
+            return ESP_OK;
+        }
+        ts_event_t sync_event = event;
+        return send_sync_event(&sync_event);
+    }
     if (!send_event) {
         return ESP_OK;
     }
-
-    const ts_event_t event = {.type = TS_EVENT_WIFI_CHANGED};
     if (xQueueSend(s_ts.queue, &event, 0) == pdTRUE) {
         return ESP_OK;
     }

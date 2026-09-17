@@ -1,3 +1,46 @@
+diff --git a/src/microlink.c b/src/microlink.c
+--- a/src/microlink.c
++++ b/src/microlink.c
+@@ -136,19 +136,20 @@ static void *cjson_psram_malloc(size_t size) {
+-esp_err_t microlink_factory_reset(void) {
+-    esp_err_t err;
+-
+-    /* Erase key namespace */
+-    nvs_handle_t nvs;
+-    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+-    if (err == ESP_OK) {
+-        nvs_erase_all(nvs);
+-        nvs_commit(nvs);
+-        nvs_close(nvs);
+-        ESP_LOGI(TAG, "Factory reset: keys erased");
+-    }
+-
+-    /* Erase cached peers */
+-    ml_peer_nvs_init();
+-    ml_peer_nvs_clear();
+-    ml_peer_nvs_deinit();
+-
+-    ESP_LOGI(TAG, "Factory reset complete");
++esp_err_t microlink_factory_reset(void) {
++    /* Erase key namespace */
++    nvs_handle_t nvs;
++    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
++    if (err != ESP_OK) return err;
++
++    err = nvs_erase_all(nvs);
++    if (err == ESP_OK) err = nvs_commit(nvs);
++    nvs_close(nvs);
++    if (err != ESP_OK) return err;
++    ESP_LOGI(TAG, "Factory reset: keys erased");
++
++    /* Erase cached peers */
++    err = ml_peer_nvs_init();
++    if (err != ESP_OK) return err;
++    err = ml_peer_nvs_clear();
++    ml_peer_nvs_deinit();
++    if (err != ESP_OK) return err;
++
++    ESP_LOGI(TAG, "Factory reset complete");
 diff --git a/src/ml_stun.c b/src/ml_stun.c
 --- a/src/ml_stun.c
 +++ b/src/ml_stun.c
@@ -30,3 +73,31 @@ diff --git a/src/ml_coord.c b/src/ml_coord.c
 +        struct ifreq tls_if;
 @@ -762,0 +779 @@ static int do_tcp_connect(microlink_t *ml) {
 +            .if_name           = ml_upstream_ifreq(ml, &tls_if),
+diff --git a/src/ml_peer_nvs.c b/src/ml_peer_nvs.c
+--- a/src/ml_peer_nvs.c
++++ b/src/ml_peer_nvs.c
+@@ -292,11 +292,13 @@ esp_err_t ml_peer_nvs_remove(const uint8_t public_key[32]) {
+-esp_err_t ml_peer_nvs_clear(void) {
+-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+-
+-    esp_err_t err = nvs_erase_all(s_nvs);
+-    if (err == ESP_OK) {
+-        nvs_commit(s_nvs);
+-        if (s_table) memset(s_table, 0, sizeof(peer_nvs_table_t));
+-        ESP_LOGI(TAG, "Peer NVS cleared");
+-    }
+-    return err;
+-}
++esp_err_t ml_peer_nvs_clear(void) {
++    if (!s_initialized) return ESP_ERR_INVALID_STATE;
++
++    esp_err_t err = nvs_erase_all(s_nvs);
++    if (err != ESP_OK) return err;
++
++    err = nvs_commit(s_nvs);
++    if (err != ESP_OK) return err;
++
++    if (s_table) memset(s_table, 0, sizeof(peer_nvs_table_t));
++    ESP_LOGI(TAG, "Peer NVS cleared");
++    return ESP_OK;
++}

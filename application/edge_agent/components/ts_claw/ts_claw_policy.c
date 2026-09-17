@@ -10,6 +10,7 @@ enum {
     TS_RESOURCE_RECOVER_LARGEST_BYTES = 16 * 1024,
     TS_RESOURCE_LOW_SAMPLE_THRESHOLD = 3,
     TS_RESOURCE_RETRY_DELAY_MS = 60 * 1000,
+    TS_START_RETRY_DELAY_MS = 30 * 1000,
 };
 
 static bool address_matches(uint32_t host_order_ip, uint32_t network, uint32_t mask)
@@ -173,4 +174,14 @@ void ts_resource_guard_retry_completed(ts_resource_guard_t *guard,
     }
 
     guard->stopped_at_ms = now_ms;
+}
+
+uint64_t ts_start_retry_schedule(uint64_t now_ms)
+{
+    return now_ms + TS_START_RETRY_DELAY_MS;
+}
+
+bool ts_start_retry_due(uint64_t next_retry_ms, uint64_t now_ms)
+{
+    return next_retry_ms != 0u && now_ms >= next_retry_ms;
 }
