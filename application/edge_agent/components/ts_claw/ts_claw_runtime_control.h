@@ -25,6 +25,9 @@ typedef struct {
     esp_err_t (*set_desired_ip)(void *ctx, uint32_t desired_ip);
     esp_err_t (*start)(void *ctx);
     esp_err_t (*rebind)(void *ctx);
+    esp_err_t (*observe_reconnect_status)(void *ctx,
+                                          bool *connected,
+                                          uint64_t *control_rx_token);
     esp_err_t (*observe_connected)(void *ctx, bool *connected);
     esp_err_t (*observe_exit_active)(void *ctx, bool *active);
 } ts_claw_runtime_ops_t;
@@ -50,6 +53,8 @@ typedef struct {
     void *ops_ctx;
     ts_claw_runtime_phase_t phase;
     uint64_t started_ms;
+    uint64_t rollback_started_ms;
+    uint64_t reconnect_baseline_ctrl_rx;
     uint32_t timeout_ms;
     uint32_t old_desired_ip;
     uint32_t current_desired_ip;

@@ -33,6 +33,10 @@ typedef struct {
     esp_err_t start_results[3];
     size_t start_count;
     esp_err_t rebind_result;
+    bool reconnect_connected_values[8];
+    uint64_t reconnect_token_values[8];
+    esp_err_t reconnect_results[8];
+    size_t reconnect_count;
     bool connected_values[8];
     esp_err_t connected_results[8];
     size_t connected_count;
@@ -90,6 +94,18 @@ static esp_err_t fake_rebind(void *ctx)
     return fake->rebind_result;
 }
 
+static esp_err_t fake_observe_reconnect_status(void *ctx,
+                                               bool *connected,
+                                               uint64_t *control_rx_token)
+{
+    fake_runtime_t *fake = ctx;
+    log_call(fake, 'Q');
+    const size_t index = fake->reconnect_count++;
+    *connected = index < 8u ? fake->reconnect_connected_values[index] : false;
+    *control_rx_token = index < 8u ? fake->reconnect_token_values[index] : 0u;
+    return index < 8u ? fake->reconnect_results[index] : ESP_OK;
+}
+
 static esp_err_t fake_observe_connected(void *ctx, bool *connected)
 {
     fake_runtime_t *fake = ctx;
@@ -114,6 +130,7 @@ static const ts_claw_runtime_ops_t s_ops = {
     .set_desired_ip = fake_set_desired_ip,
     .start = fake_start,
     .rebind = fake_rebind,
+    .observe_reconnect_status = fake_observe_reconnect_status,
     .observe_connected = fake_observe_connected,
     .observe_exit_active = fake_observe_exit_active,
 };
@@ -275,6 +292,8 @@ static void test_connection_observation_failure_rolls_back(void)
     TEST_CHECK(ts_claw_runtime_control_begin_set(
                    &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, 10u);
+    TEST_CHECK(strcmp(fake.calls, "PDNSKPDOS") == 0);
+    ts_claw_runtime_control_advance(&control, 11u);
     TEST_CHECK(strcmp(fake.calls, "PDNSKPDOSKE") == 0);
     assert_recovered_failure(&fake, &control, TEST_ERROR);
 }
@@ -293,6 +312,8 @@ static void test_exit_observation_failure_rolls_back(void)
     TEST_CHECK(ts_claw_runtime_control_begin_set(
                    &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, 10u);
+    TEST_CHECK(strcmp(fake.calls, "PDNSKEPDOS") == 0);
+    ts_claw_runtime_control_advance(&control, 11u);
     TEST_CHECK(strcmp(fake.calls, "PDNSKEPDOSKE") == 0);
     assert_recovered_failure(&fake, &control, TEST_ERROR);
 }
@@ -334,7 +355,7 @@ static void test_failed_recovery_destroy_never_reports_success(void)
     TEST_CHECK(fake.start_count == 1u);
 }
 
-static void test_deadline_boundary_and_clock_wrap_are_deterministic(void)
+static void test_clock_wrap_before_deadline_is_deterministic(void)
 {
     fake_runtime_t fake;
     ts_claw_runtime_control_t control;
@@ -348,8 +369,72 @@ static void test_deadline_boundary_and_clock_wrap_are_deterministic(void)
                    &control, TEST_OLD_IP, TEST_NEW_IP, 10u, UINT64_MAX - 5u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, UINT64_MAX - 1u);
     TEST_CHECK(ts_claw_runtime_control_is_active(&control));
-    ts_claw_runtime_control_advance(&control, 4u);
+    ts_claw_runtime_control_advance(&control, 3u);
     TEST_CHECK(take_completion(&control, ESP_OK).selected_exit_node_ip == TEST_NEW_IP);
+}
+
+static void test_timeout_starts_a_fresh_rollback_window(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.connected_values[0] = true;
+    fake.exit_values[0] = true;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 1000u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    TEST_CHECK(strcmp(fake.calls, "PDNSPDOS") == 0);
+    TEST_CHECK(fake.connected_count == 0u);
+
+    ts_claw_runtime_control_advance(&control, 1250u);
+    TEST_CHECK(strcmp(fake.calls, "PDNSPDOSKE") == 0);
+    assert_recovered_failure(&fake, &control, ESP_ERR_TIMEOUT);
+}
+
+static void test_positive_deadline_precedes_late_connection_success(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.connected_values[0] = true;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 10u, 1000u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 1010u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    TEST_CHECK(fake.connected_count == 0u);
+    TEST_CHECK(strcmp(fake.calls, "PDNSPDOS") == 0);
+
+    ts_claw_runtime_control_advance(&control, 1020u);
+    const ts_claw_runtime_completion_t completion =
+        take_completion(&control, ESP_ERR_TIMEOUT);
+    TEST_CHECK(!completion.rollback_recovered);
+    TEST_CHECK(fake.connected_count == 0u);
+}
+
+static void test_positive_deadline_precedes_late_exit_success(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.connected_values[0] = true;
+    fake.exit_values[0] = false;
+    fake.exit_values[1] = true;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 10u, 1000u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 1009u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    TEST_CHECK(fake.exit_count == 1u);
+    ts_claw_runtime_control_advance(&control, 1010u);
+    TEST_CHECK(fake.exit_count == 1u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    TEST_CHECK(strstr(fake.calls, "PDOS") != NULL);
 }
 
 static void test_timeout_zero_observes_once_then_rolls_back(void)
@@ -364,6 +449,9 @@ static void test_timeout_zero_observes_once_then_rolls_back(void)
     TEST_CHECK(ts_claw_runtime_control_begin_set(
                    &control, 0u, TEST_NEW_IP, 0u, 100u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, 100u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    TEST_CHECK(strcmp(fake.calls, "PDNSKPDCS") == 0);
+    ts_claw_runtime_control_advance(&control, 101u);
     const ts_claw_runtime_completion_t completion = take_completion(&control, ESP_ERR_TIMEOUT);
     TEST_CHECK(completion.rollback_attempted);
     TEST_CHECK(completion.rollback_recovered);
@@ -420,20 +508,63 @@ static void test_reconnect_uses_rebind_and_preserves_desired_ip(void)
     fake_runtime_t fake;
     ts_claw_runtime_control_t control;
     fake_init(&fake, TEST_OLD_IP);
-    fake.connected_values[0] = false;
-    fake.connected_values[1] = true;
+    fake.reconnect_connected_values[0] = true;
+    fake.reconnect_token_values[0] = 100u;
+    fake.reconnect_connected_values[1] = true;
+    fake.reconnect_token_values[1] = 100u;
+    fake.reconnect_connected_values[2] = true;
+    fake.reconnect_token_values[2] = 101u;
     ts_claw_runtime_control_init(&control, &s_ops, &fake);
 
     TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 100u, 10u) == ESP_OK);
-    TEST_CHECK(strcmp(fake.calls, "R") == 0);
+    TEST_CHECK(strcmp(fake.calls, "QR") == 0);
     ts_claw_runtime_control_advance(&control, 20u);
     TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    TEST_CHECK(strcmp(fake.calls, "QRQ") == 0);
     ts_claw_runtime_control_advance(&control, 30u);
     (void)take_completion(&control, ESP_OK);
-    TEST_CHECK(strcmp(fake.calls, "RKK") == 0);
+    TEST_CHECK(strcmp(fake.calls, "QRQQ") == 0);
     TEST_CHECK(fake.desired_ip == TEST_OLD_IP);
     TEST_CHECK(fake.destroy_count == 0u);
     TEST_CHECK(fake.start_count == 0u);
+}
+
+static void test_reconnect_disconnected_then_new_control_rx_succeeds(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.reconnect_connected_values[0] = true;
+    fake.reconnect_token_values[0] = 200u;
+    fake.reconnect_connected_values[1] = false;
+    fake.reconnect_token_values[1] = 201u;
+    fake.reconnect_connected_values[2] = true;
+    fake.reconnect_token_values[2] = 202u;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 100u, 0u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 1u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 2u);
+    (void)take_completion(&control, ESP_OK);
+}
+
+static void test_reconnect_zero_baseline_requires_nonzero_new_control_rx(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.reconnect_connected_values[0] = true;
+    fake.reconnect_connected_values[1] = true;
+    fake.reconnect_connected_values[2] = true;
+    fake.reconnect_token_values[2] = 1u;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 100u, 0u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 1u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 2u);
+    (void)take_completion(&control, ESP_OK);
 }
 
 static void test_reconnect_failures_and_timeout(void)
@@ -448,6 +579,12 @@ static void test_reconnect_failures_and_timeout(void)
     (void)take_completion(&control, TEST_ERROR);
 
     fake_init(&fake, TEST_OLD_IP);
+    fake.reconnect_connected_values[0] = true;
+    fake.reconnect_token_values[0] = 300u;
+    fake.reconnect_connected_values[1] = true;
+    fake.reconnect_token_values[1] = 300u;
+    fake.reconnect_connected_values[2] = true;
+    fake.reconnect_token_values[2] = 301u;
     ts_claw_runtime_control_init(&control, &s_ops, &fake);
     TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 10u, 100u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, 109u);
@@ -456,6 +593,7 @@ static void test_reconnect_failures_and_timeout(void)
     const ts_claw_runtime_completion_t completion = take_completion(&control, ESP_ERR_TIMEOUT);
     TEST_CHECK(!completion.rollback_attempted);
     TEST_CHECK(fake.desired_ip == TEST_OLD_IP);
+    TEST_CHECK(fake.reconnect_count == 2u);
 }
 
 int main(void)
@@ -470,11 +608,16 @@ int main(void)
     test_exit_observation_failure_rolls_back();
     test_failed_recovery_never_reports_success();
     test_failed_recovery_destroy_never_reports_success();
-    test_deadline_boundary_and_clock_wrap_are_deterministic();
+    test_clock_wrap_before_deadline_is_deterministic();
+    test_timeout_starts_a_fresh_rollback_window();
+    test_positive_deadline_precedes_late_connection_success();
+    test_positive_deadline_precedes_late_exit_success();
     test_timeout_zero_observes_once_then_rolls_back();
     test_second_mutation_is_rejected_without_state_damage();
     test_null_and_callback_error_boundaries();
     test_reconnect_uses_rebind_and_preserves_desired_ip();
+    test_reconnect_disconnected_then_new_control_rx_succeeds();
+    test_reconnect_zero_baseline_requires_nonzero_new_control_rx();
     test_reconnect_failures_and_timeout();
 
     puts("ts_claw_runtime_control: all tests passed");

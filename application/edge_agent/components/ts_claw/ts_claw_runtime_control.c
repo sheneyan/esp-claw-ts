@@ -6,14 +6,16 @@ static bool runtime_ops_valid(const ts_claw_runtime_ops_t *ops)
 {
     return ops != NULL && ops->retire_probe != NULL && ops->destroy != NULL &&
            ops->set_desired_ip != NULL && ops->start != NULL &&
-           ops->rebind != NULL && ops->observe_connected != NULL &&
+           ops->rebind != NULL && ops->observe_reconnect_status != NULL &&
+           ops->observe_connected != NULL &&
            ops->observe_exit_active != NULL;
 }
 
-static bool runtime_deadline_reached(const ts_claw_runtime_control_t *control,
+static bool runtime_deadline_reached(uint64_t started_ms,
+                                     uint32_t timeout_ms,
                                      uint64_t current_ms)
 {
-    return current_ms - control->started_ms >= control->timeout_ms;
+    return timeout_ms > 0u && current_ms - started_ms >= timeout_ms;
 }
 
 static void runtime_finish(ts_claw_runtime_control_t *control,
@@ -31,8 +33,10 @@ static void runtime_finish(ts_claw_runtime_control_t *control,
 }
 
 static void runtime_start_rollback(ts_claw_runtime_control_t *control,
-                                   esp_err_t operation_error)
+                                   esp_err_t operation_error,
+                                   uint64_t current_ms)
 {
+    control->rollback_started_ms = current_ms;
     const esp_err_t retire_error = control->ops->retire_probe(control->ops_ctx);
     const esp_err_t destroy_error = retire_error == ESP_OK ?
         control->ops->destroy(control->ops_ctx) : retire_error;
@@ -59,9 +63,10 @@ static void runtime_start_rollback(ts_claw_runtime_control_t *control,
 }
 
 static void runtime_fail_set(ts_claw_runtime_control_t *control,
-                             esp_err_t operation_error)
+                             esp_err_t operation_error,
+                             uint64_t current_ms)
 {
-    runtime_start_rollback(control, operation_error);
+    runtime_start_rollback(control, operation_error, current_ms);
 }
 
 void ts_claw_runtime_control_init(ts_claw_runtime_control_t *control,
@@ -100,23 +105,23 @@ esp_err_t ts_claw_runtime_control_begin_set(ts_claw_runtime_control_t *control,
 
     esp_err_t error = control->ops->retire_probe(control->ops_ctx);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error);
+        runtime_fail_set(control, error, current_ms);
         return ESP_OK;
     }
     error = control->ops->destroy(control->ops_ctx);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error);
+        runtime_fail_set(control, error, current_ms);
         return ESP_OK;
     }
     error = control->ops->set_desired_ip(control->ops_ctx, requested_ip);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error);
+        runtime_fail_set(control, error, current_ms);
         return ESP_OK;
     }
     control->current_desired_ip = requested_ip;
     error = control->ops->start(control->ops_ctx);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error);
+        runtime_fail_set(control, error, current_ms);
         return ESP_OK;
     }
 
@@ -141,7 +146,18 @@ esp_err_t ts_claw_runtime_control_begin_reconnect(ts_claw_runtime_control_t *con
     control->operation_error = ESP_OK;
     memset(&control->completion, 0, sizeof(control->completion));
 
-    const esp_err_t error = control->ops->rebind(control->ops_ctx);
+    bool connected = false;
+    uint64_t control_rx_token = 0u;
+    esp_err_t error = control->ops->observe_reconnect_status(
+        control->ops_ctx, &connected, &control_rx_token);
+    (void)connected;
+    if (error != ESP_OK) {
+        runtime_finish(control, error, false, false);
+        return ESP_OK;
+    }
+    control->reconnect_baseline_ctrl_rx = control_rx_token;
+
+    error = control->ops->rebind(control->ops_ctx);
     if (error != ESP_OK) {
         runtime_finish(control, error, false, false);
     } else {
@@ -152,26 +168,32 @@ esp_err_t ts_claw_runtime_control_begin_reconnect(ts_claw_runtime_control_t *con
 
 static bool runtime_observe_connected(ts_claw_runtime_control_t *control,
                                       uint64_t current_ms,
-                                      bool rollback,
-                                      bool reconnect)
+                                      bool rollback)
 {
+    const uint64_t started_ms = rollback ? control->rollback_started_ms :
+                                          control->started_ms;
+    if (runtime_deadline_reached(started_ms, control->timeout_ms, current_ms)) {
+        if (rollback) {
+            runtime_finish(control, control->operation_error, false, false);
+        } else {
+            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
+        }
+        return false;
+    }
+
     bool connected = false;
     const esp_err_t error = control->ops->observe_connected(
         control->ops_ctx, &connected);
     if (error != ESP_OK) {
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
-        } else if (reconnect) {
-            runtime_finish(control, error, false, false);
         } else {
-            runtime_fail_set(control, error);
+            runtime_fail_set(control, error, current_ms);
         }
         return false;
     }
     if (connected) {
-        if (reconnect) {
-            runtime_finish(control, ESP_OK, false, false);
-        } else if (control->current_desired_ip == 0u) {
+        if (control->current_desired_ip == 0u) {
             runtime_finish(control, rollback ? control->operation_error : ESP_OK,
                            false, rollback);
         } else {
@@ -182,13 +204,11 @@ static bool runtime_observe_connected(ts_claw_runtime_control_t *control,
         }
         return false;
     }
-    if (runtime_deadline_reached(control, current_ms)) {
+    if (control->timeout_ms == 0u) {
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
-        } else if (reconnect) {
-            runtime_finish(control, ESP_ERR_TIMEOUT, false, false);
         } else {
-            runtime_fail_set(control, ESP_ERR_TIMEOUT);
+            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
         }
     }
     return false;
@@ -198,6 +218,17 @@ static void runtime_observe_exit(ts_claw_runtime_control_t *control,
                                  uint64_t current_ms,
                                  bool rollback)
 {
+    const uint64_t started_ms = rollback ? control->rollback_started_ms :
+                                          control->started_ms;
+    if (runtime_deadline_reached(started_ms, control->timeout_ms, current_ms)) {
+        if (rollback) {
+            runtime_finish(control, control->operation_error, false, false);
+        } else {
+            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
+        }
+        return;
+    }
+
     bool active = false;
     const esp_err_t error = control->ops->observe_exit_active(
         control->ops_ctx, &active);
@@ -205,7 +236,7 @@ static void runtime_observe_exit(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, error);
+            runtime_fail_set(control, error, current_ms);
         }
         return;
     }
@@ -214,12 +245,40 @@ static void runtime_observe_exit(ts_claw_runtime_control_t *control,
                        true, rollback);
         return;
     }
-    if (runtime_deadline_reached(control, current_ms)) {
+    if (control->timeout_ms == 0u) {
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, ESP_ERR_TIMEOUT);
+            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
         }
+    }
+}
+
+static void runtime_observe_reconnect(ts_claw_runtime_control_t *control,
+                                      uint64_t current_ms)
+{
+    if (runtime_deadline_reached(control->started_ms, control->timeout_ms,
+                                 current_ms)) {
+        runtime_finish(control, ESP_ERR_TIMEOUT, false, false);
+        return;
+    }
+
+    bool connected = false;
+    uint64_t control_rx_token = 0u;
+    const esp_err_t error = control->ops->observe_reconnect_status(
+        control->ops_ctx, &connected, &control_rx_token);
+    if (error != ESP_OK) {
+        runtime_finish(control, error, false, false);
+        return;
+    }
+    /* A still-connected pre-rebind session is not proof of reconnection. */
+    if (connected && control_rx_token != 0u &&
+        control_rx_token > control->reconnect_baseline_ctrl_rx) {
+        runtime_finish(control, ESP_OK, false, false);
+        return;
+    }
+    if (control->timeout_ms == 0u) {
+        runtime_finish(control, ESP_ERR_TIMEOUT, false, false);
     }
 }
 
@@ -230,7 +289,7 @@ static void runtime_advance_rollback(ts_claw_runtime_control_t *control,
         return;
     }
     if (control->phase == TS_CLAW_RUNTIME_ROLLBACK_WAIT_CONNECTED) {
-        if (runtime_observe_connected(control, current_ms, true, false) &&
+        if (runtime_observe_connected(control, current_ms, true) &&
             control->active) {
             runtime_observe_exit(control, current_ms, true);
         }
@@ -248,30 +307,20 @@ void ts_claw_runtime_control_advance(ts_claw_runtime_control_t *control,
 
     switch (control->phase) {
     case TS_CLAW_RUNTIME_WAIT_CONNECTED:
-        if (runtime_observe_connected(control, current_ms, false, false) &&
+        if (runtime_observe_connected(control, current_ms, false) &&
             control->active) {
             runtime_observe_exit(control, current_ms, false);
-        }
-        if (control->active &&
-            (control->phase == TS_CLAW_RUNTIME_ROLLBACK_WAIT_CONNECTED ||
-             control->phase == TS_CLAW_RUNTIME_ROLLBACK_WAIT_EXIT_ACTIVE)) {
-            runtime_advance_rollback(control, current_ms);
         }
         break;
     case TS_CLAW_RUNTIME_WAIT_EXIT_ACTIVE:
         runtime_observe_exit(control, current_ms, false);
-        if (control->active &&
-            (control->phase == TS_CLAW_RUNTIME_ROLLBACK_WAIT_CONNECTED ||
-             control->phase == TS_CLAW_RUNTIME_ROLLBACK_WAIT_EXIT_ACTIVE)) {
-            runtime_advance_rollback(control, current_ms);
-        }
         break;
     case TS_CLAW_RUNTIME_ROLLBACK_WAIT_CONNECTED:
     case TS_CLAW_RUNTIME_ROLLBACK_WAIT_EXIT_ACTIVE:
         runtime_advance_rollback(control, current_ms);
         break;
     case TS_CLAW_RUNTIME_RECONNECT_WAIT_CONNECTED:
-        (void)runtime_observe_connected(control, current_ms, false, true);
+        runtime_observe_reconnect(control, current_ms);
         break;
     case TS_CLAW_RUNTIME_IDLE:
     default:

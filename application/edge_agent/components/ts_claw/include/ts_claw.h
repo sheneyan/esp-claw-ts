@@ -87,7 +87,10 @@ esp_err_t ts_claw_get_status(ts_claw_status_t *out_status);
 esp_err_t ts_claw_get_diagnostics(ts_claw_diagnostics_t *out);
 /* Returns the number of copied exit nodes, or a negative error value. */
 int ts_claw_list_exit_nodes(ts_claw_peer_t *out, size_t capacity);
-/* timeout_ms == 0 performs one immediate observation before timing out. */
+/*
+ * timeout_ms == 0 performs one post-action observation per required predicate;
+ * it never means an unbounded wait. Positive deadlines exclude the boundary.
+ */
 esp_err_t ts_claw_set_exit_node(uint32_t exit_node_ip,
                                 uint32_t timeout_ms,
                                 ts_claw_runtime_result_t *out);

@@ -481,6 +481,22 @@ static esp_err_t runtime_rebind(void *ctx)
     return microlink_rebind(s_ts.ml);
 }
 
+static esp_err_t runtime_observe_reconnect_status(void *ctx,
+                                                  bool *connected,
+                                                  uint64_t *control_rx_token)
+{
+    (void)ctx;
+    if (connected == NULL || control_rx_token == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_ts.ml == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    *connected = microlink_is_connected(s_ts.ml);
+    *control_rx_token = microlink_get_ctrl_last_rx_ms(s_ts.ml);
+    return ESP_OK;
+}
+
 static esp_err_t runtime_observe_connected(void *ctx, bool *connected)
 {
     (void)ctx;
@@ -512,6 +528,7 @@ static const ts_claw_runtime_ops_t s_runtime_ops = {
     .set_desired_ip = runtime_set_desired_ip,
     .start = runtime_start,
     .rebind = runtime_rebind,
+    .observe_reconnect_status = runtime_observe_reconnect_status,
     .observe_connected = runtime_observe_connected,
     .observe_exit_active = runtime_observe_exit_active,
 };
