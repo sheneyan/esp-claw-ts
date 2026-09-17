@@ -68,6 +68,40 @@ static void test_loopback_and_link_local_stay_on_sta(void)
     TEST_CHECK(ts_route_classify(0xA9FF0000u, true) == TS_ROUTE_WG);
 }
 
+static void test_non_public_special_ranges_use_default_route(void)
+{
+    TEST_CHECK(ts_route_classify(0x00000000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0x00FFFFFFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0x01000000u, true) == TS_ROUTE_WG);
+
+    TEST_CHECK(ts_route_classify(0xBFFFFFFFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC0000000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC00000FFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC0000100u, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC0000200u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC00002FFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC0586300u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC05863FFu, true) == TS_ROUTE_DEFAULT);
+
+    TEST_CHECK(ts_route_classify(0xC611FFFFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC6120000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC613FFFFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC6140000u, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC6336400u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC63364FFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xCB007100u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xCB0071FFu, true) == TS_ROUTE_DEFAULT);
+
+    TEST_CHECK(ts_route_classify(0xDFFFFFFFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xE0000000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xEFFFFFFFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xF0000000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xFFFFFFFFu, true) == TS_ROUTE_DEFAULT);
+
+    TEST_CHECK(ts_route_classify(0xC0000201u, false) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0x08080808u, false) == TS_ROUTE_STA);
+}
+
 static void test_exit_activation_and_fallback_thresholds(void)
 {
     ts_exit_policy_t policy;
@@ -289,6 +323,7 @@ int main(void)
     test_cgnat_boundaries();
     test_rfc1918_boundaries();
     test_loopback_and_link_local_stay_on_sta();
+    test_non_public_special_ranges_use_default_route();
     test_exit_activation_and_fallback_thresholds();
     test_repeated_tunnel_up_preserves_probe_progress();
     test_disabled_and_tunnel_loss();

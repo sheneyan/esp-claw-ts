@@ -83,8 +83,8 @@ struct netif *__wrap_ip4_route_src_hook(const ip4_addr_t *src,
     if (ts_route_is_local_bypass(destination) && state.sta_netif != NULL) {
         return state.sta_netif;
     }
-    if (state.exit_active && state.tunnel_available && state.upstream_pinned &&
-        state.wg_netif != NULL) {
+    if (ts_route_is_public_unicast(destination) && state.exit_active &&
+        state.tunnel_available && state.upstream_pinned && state.wg_netif != NULL) {
         return state.wg_netif;
     }
     return __real_ip4_route_src_hook(src, dest);

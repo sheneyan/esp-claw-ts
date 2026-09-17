@@ -56,6 +56,7 @@ bool ts_exit_policy_routes_public(const ts_exit_policy_t *policy);
 bool ts_route_is_cgnat(uint32_t host_order_ip);
 bool ts_route_is_private(uint32_t host_order_ip);
 bool ts_route_is_local_bypass(uint32_t host_order_ip);
+bool ts_route_is_public_unicast(uint32_t host_order_ip);
 ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active);
 
 void ts_resource_guard_init(ts_resource_guard_t *guard);

@@ -106,6 +106,20 @@ bool ts_route_is_local_bypass(uint32_t host_order_ip)
            address_matches(host_order_ip, 0xA9FE0000u, 0xFFFF0000u);
 }
 
+bool ts_route_is_public_unicast(uint32_t host_order_ip)
+{
+    return !ts_route_is_cgnat(host_order_ip) &&
+           !ts_route_is_local_bypass(host_order_ip) &&
+           !address_matches(host_order_ip, 0x00000000u, 0xFF000000u) &&
+           !address_matches(host_order_ip, 0xC0000000u, 0xFFFFFF00u) &&
+           !address_matches(host_order_ip, 0xC0000200u, 0xFFFFFF00u) &&
+           !address_matches(host_order_ip, 0xC0586300u, 0xFFFFFF00u) &&
+           !address_matches(host_order_ip, 0xC6120000u, 0xFFFE0000u) &&
+           !address_matches(host_order_ip, 0xC6336400u, 0xFFFFFF00u) &&
+           !address_matches(host_order_ip, 0xCB007100u, 0xFFFFFF00u) &&
+           !address_matches(host_order_ip, 0xE0000000u, 0xE0000000u);
+}
+
 ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)
 {
     if (ts_route_is_cgnat(host_order_ip)) {
@@ -113,6 +127,9 @@ ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)
     }
     if (ts_route_is_local_bypass(host_order_ip)) {
         return TS_ROUTE_STA;
+    }
+    if (!ts_route_is_public_unicast(host_order_ip)) {
+        return TS_ROUTE_DEFAULT;
     }
     return exit_active ? TS_ROUTE_WG : TS_ROUTE_STA;
 }
