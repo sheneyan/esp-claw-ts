@@ -10,6 +10,11 @@ dependencies:
   app_config:
     path: ../components/app_config
 
+  cap_tailscale:
+    rules:
+    - if: $CONFIG{ESP_BOARD_ESP32_S3_N16R8_TS_CLAW} == True
+    path: ../../../components/claw_capabilities/cap_tailscale
+
   captive_dns:
     path: ../../../components/common/captive_dns
 

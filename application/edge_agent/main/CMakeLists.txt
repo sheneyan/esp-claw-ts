@@ -9,7 +9,13 @@ if(CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW)
         "provision_button.c"
         "provision_button_policy.c"
     )
-    list(APPEND EDGE_AGENT_MAIN_PRIV_REQUIRES esp_driver_gpio settings ts_claw)
+    list(APPEND EDGE_AGENT_MAIN_PRIV_REQUIRES
+        cap_tailscale
+        esp_driver_gpio
+        settings
+        tailscale_service
+        ts_claw
+    )
 endif()
 
 idf_component_register(

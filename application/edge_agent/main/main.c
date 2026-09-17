@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "app_claw.h"
+#include "app_capabilities.h"
 #include "app_fs.h"
 #include "claw_version.h"
 #include "claw_paths.h"
@@ -30,13 +31,16 @@
 #endif
 #include "app_config.h"
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+#include "cap_tailscale.h"
 #include "provision_button.h"
 #include "settings_store.h"
+#include "tailscale_service.h"
 #include "ts_claw.h"
 #include "lwip/def.h"
 #endif
 
 #define APP_ENABLE_MEM_LOG        (0)
+#define MAIN_TAILSCALE_RUNTIME_TIMEOUT_MS 30000u
 
 static const char *TAG = "app";
 
@@ -44,6 +48,7 @@ static app_config_t *s_config;
 static app_claw_config_t *s_claw_config;
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
 static bool s_ts_claw_initialized;
+static tailscale_service_handle_t s_tailscale_service;
 #endif
 
 static esp_err_t app_allocate_runtime_state(void)
@@ -402,6 +407,351 @@ static esp_err_t main_get_tailscale_status(http_server_tailscale_status_t *statu
     return ESP_OK;
 }
 
+static esp_err_t main_tailscale_service_get_diagnostics(ts_claw_diagnostics_t *out,
+                                                        void *ctx)
+{
+    (void)ctx;
+    return ts_claw_get_diagnostics(out);
+}
+
+static int main_tailscale_service_list_exit_nodes(ts_claw_peer_t *out,
+                                                  size_t capacity,
+                                                  void *ctx)
+{
+    (void)ctx;
+    return ts_claw_list_exit_nodes(out, capacity);
+}
+
+static esp_err_t main_tailscale_service_apply_exit_node(
+    uint32_t ip, ts_claw_runtime_result_t *out, void *ctx)
+{
+    (void)ctx;
+    return ts_claw_set_exit_node(ip, MAIN_TAILSCALE_RUNTIME_TIMEOUT_MS, out);
+}
+
+static esp_err_t main_tailscale_service_rebind(void *ctx)
+{
+    (void)ctx;
+    return ts_claw_reconnect(MAIN_TAILSCALE_RUNTIME_TIMEOUT_MS);
+}
+
+static esp_err_t main_tailscale_service_load_persisted_exit(char out[16],
+                                                            void *ctx)
+{
+    app_config_t *config;
+    esp_err_t err;
+
+    (void)ctx;
+    if (!out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    config = calloc(1, sizeof(*config));
+    if (!config) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = app_config_load(config);
+    if (err == ESP_OK) {
+        strlcpy(out, config->tailscale_exit_node, 16);
+    }
+    free(config);
+    return err;
+}
+
+static esp_err_t main_tailscale_service_save_persisted_exit(const char *ip,
+                                                            void *ctx)
+{
+    app_config_t *config;
+    esp_err_t err;
+    char validation_message[96] = {0};
+
+    (void)ctx;
+    if (!ip) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    config = calloc(1, sizeof(*config));
+    if (!config) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = app_config_load(config);
+    if (err == ESP_OK) {
+        strlcpy(config->tailscale_exit_node, ip,
+                sizeof(config->tailscale_exit_node));
+        err = app_config_validate_tailscale(config, validation_message,
+                                            sizeof(validation_message));
+    }
+    if (err == ESP_OK) {
+        err = main_save_config(config);
+    }
+    free(config);
+    return err;
+}
+
+static esp_err_t main_cap_tailscale_get_status(cap_tailscale_status_t *out,
+                                               void *ctx)
+{
+    tailscale_service_handle_t service = ctx;
+    ts_claw_diagnostics_t *diagnostics;
+    esp_err_t err;
+
+    if (!service || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    diagnostics = calloc(1, sizeof(*diagnostics));
+    if (!diagnostics) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_get_diagnostics(service, diagnostics);
+    if (err != ESP_OK) {
+        free(diagnostics);
+        return err;
+    }
+
+    out->enabled = diagnostics->status.enabled;
+    out->connected = diagnostics->status.connected;
+    strlcpy(out->hostname, diagnostics->hostname, sizeof(out->hostname));
+    if (diagnostics->status.vpn_ip != 0u) {
+        main_format_host_order_ipv4(diagnostics->status.vpn_ip,
+                                    out->vpn_ip, sizeof(out->vpn_ip));
+    } else {
+        strlcpy(out->vpn_ip, "0.0.0.0", sizeof(out->vpn_ip));
+    }
+    strlcpy(out->path,
+            !diagnostics->status.connected ? "unavailable" :
+            diagnostics->status.direct_path_available ? "direct" : "derp",
+            sizeof(out->path));
+    out->peer_count = diagnostics->status.peer_count;
+    out->peer_online = diagnostics->status.peer_online;
+    if (diagnostics->status.exit_node_ip != 0u) {
+        main_format_host_order_ipv4(diagnostics->status.exit_node_ip,
+                                    out->exit_node, sizeof(out->exit_node));
+    }
+    strlcpy(out->exit_state,
+            main_tailscale_exit_state_name(diagnostics->status.exit_state),
+            sizeof(out->exit_state));
+    strlcpy(out->egress, diagnostics->status.egress, sizeof(out->egress));
+    strlcpy(out->last_error, diagnostics->status.last_error,
+            sizeof(out->last_error));
+    out->derp_active.id = diagnostics->derp_active_region;
+    strlcpy(out->derp_active.name, diagnostics->derp_active_name,
+            sizeof(out->derp_active.name));
+    out->derp_default.id = diagnostics->derp_default_region;
+    strlcpy(out->derp_default.name, diagnostics->derp_default_name,
+            sizeof(out->derp_default.name));
+    out->derp_rtt_count = diagnostics->derp_rtt_count < CAP_TAILSCALE_MAX_DERP_RTTS
+                              ? diagnostics->derp_rtt_count
+                              : CAP_TAILSCALE_MAX_DERP_RTTS;
+    for (size_t i = 0; i < out->derp_rtt_count; ++i) {
+        out->derp_rtts[i].region.id = diagnostics->derp_rtts[i].region_id;
+        strlcpy(out->derp_rtts[i].region.name,
+                diagnostics->derp_rtts[i].region_name,
+                sizeof(out->derp_rtts[i].region.name));
+        out->derp_rtts[i].rtt_ms = diagnostics->derp_rtts[i].rtt_ms;
+        out->derp_rtts[i].timed_out = diagnostics->derp_rtts[i].timed_out;
+    }
+    out->derp_heartbeat_age_ms = diagnostics->derp_heartbeat_age_ms;
+    out->control_rx_age_ms = diagnostics->control_rx_age_ms;
+    out->reconnect_coord_watchdog = diagnostics->rc_coord_stream_wd;
+    out->reconnect_coord_transport = diagnostics->rc_coord_transport;
+    out->reconnect_derp_watchdog = diagnostics->rc_derp_rx_wd;
+    out->reconnect_derp_retry = diagnostics->rc_derp_retry;
+    free(diagnostics);
+    return ESP_OK;
+}
+
+static int main_cap_tailscale_list_exit_nodes(cap_tailscale_exit_node_t *out,
+                                              size_t capacity,
+                                              void *ctx)
+{
+    tailscale_service_handle_t service = ctx;
+    ts_claw_peer_t *peers;
+    size_t bounded_capacity;
+    int count;
+
+    if (!service || (capacity > 0u && !out)) {
+        return -ESP_ERR_INVALID_ARG;
+    }
+    bounded_capacity = capacity < CAP_TAILSCALE_MAX_EXIT_NODES
+                           ? capacity
+                           : CAP_TAILSCALE_MAX_EXIT_NODES;
+    if (bounded_capacity == 0u) {
+        return 0;
+    }
+    memset(out, 0, bounded_capacity * sizeof(*out));
+    peers = calloc(bounded_capacity, sizeof(*peers));
+    if (!peers) {
+        return -ESP_ERR_NO_MEM;
+    }
+    count = tailscale_service_list_exit_nodes(service, peers, bounded_capacity);
+    if (count >= 0) {
+        for (int i = 0; i < count; ++i) {
+            main_format_host_order_ipv4(peers[i].vpn_ip, out[i].ip,
+                                        sizeof(out[i].ip));
+            strlcpy(out[i].hostname, peers[i].hostname,
+                    sizeof(out[i].hostname));
+            out[i].online = peers[i].online;
+            out[i].direct = peers[i].direct;
+            out[i].derp_region.id = peers[i].derp_region;
+            strlcpy(out[i].derp_region.name, peers[i].derp_region_name,
+                    sizeof(out[i].derp_region.name));
+        }
+    }
+    free(peers);
+    return count;
+}
+
+static void main_cap_tailscale_copy_mutation(
+    const tailscale_service_result_t *source,
+    cap_tailscale_mutation_result_t *destination)
+{
+    memset(destination, 0, sizeof(*destination));
+    destination->ok = source->ok;
+    strlcpy(destination->error, tailscale_service_error_name(source->error),
+            sizeof(destination->error));
+    strlcpy(destination->message, source->message,
+            sizeof(destination->message));
+    strlcpy(destination->selected_ip, source->selected_ip,
+            sizeof(destination->selected_ip));
+    strlcpy(destination->selected_hostname, source->selected_hostname,
+            sizeof(destination->selected_hostname));
+    strlcpy(destination->exit_state,
+            main_tailscale_exit_state_name(source->exit_state),
+            sizeof(destination->exit_state));
+    strlcpy(destination->egress, source->egress,
+            sizeof(destination->egress));
+    destination->persisted = source->persisted;
+}
+
+static esp_err_t main_cap_tailscale_set_exit_node(
+    const char *selector, cap_tailscale_mutation_result_t *out, void *ctx)
+{
+    tailscale_service_handle_t service = ctx;
+    tailscale_service_result_t *result;
+    esp_err_t err;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!service || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_set_exit_node(service, selector, result);
+    if (err == ESP_OK) {
+        main_cap_tailscale_copy_mutation(result, out);
+    }
+    free(result);
+    return err;
+}
+
+static esp_err_t main_cap_tailscale_clear_exit_node(
+    cap_tailscale_mutation_result_t *out, void *ctx)
+{
+    tailscale_service_handle_t service = ctx;
+    tailscale_service_result_t *result;
+    esp_err_t err;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!service || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_clear_exit_node(service, result);
+    if (err == ESP_OK) {
+        main_cap_tailscale_copy_mutation(result, out);
+    }
+    free(result);
+    return err;
+}
+
+static esp_err_t main_cap_tailscale_reconnect(cap_tailscale_status_t *out,
+                                              void *ctx)
+{
+    tailscale_service_handle_t service = ctx;
+    tailscale_service_result_t *result;
+    esp_err_t err;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!service || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_reconnect(service, result);
+    if (err == ESP_OK && !result->ok) {
+        err = ESP_FAIL;
+    }
+    free(result);
+    return err == ESP_OK ? main_cap_tailscale_get_status(out, service) : err;
+}
+
+static esp_err_t main_register_tailscale_capability(
+    const app_claw_config_t *config,
+    const app_claw_storage_paths_t *paths)
+{
+    (void)config;
+    (void)paths;
+    return cap_tailscale_register_group();
+}
+
+static esp_err_t main_init_tailscale_capability(void)
+{
+    const tailscale_service_ops_t service_ops = {
+        .get_diagnostics = main_tailscale_service_get_diagnostics,
+        .list_exit_nodes = main_tailscale_service_list_exit_nodes,
+        .apply_exit_node = main_tailscale_service_apply_exit_node,
+        .rebind = main_tailscale_service_rebind,
+        .load_persisted_exit = main_tailscale_service_load_persisted_exit,
+        .save_persisted_exit = main_tailscale_service_save_persisted_exit,
+        .ctx = NULL,
+    };
+    esp_err_t err = tailscale_service_create(&service_ops,
+                                             &s_tailscale_service);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const cap_tailscale_provider_t provider = {
+        .get_status = main_cap_tailscale_get_status,
+        .list_exit_nodes = main_cap_tailscale_list_exit_nodes,
+        .set_exit_node = main_cap_tailscale_set_exit_node,
+        .clear_exit_node = main_cap_tailscale_clear_exit_node,
+        .reconnect = main_cap_tailscale_reconnect,
+        .ctx = s_tailscale_service,
+    };
+    err = cap_tailscale_set_provider(&provider);
+    if (err != ESP_OK) {
+        tailscale_service_delete(s_tailscale_service);
+        s_tailscale_service = NULL;
+        return err;
+    }
+    err = app_capabilities_register_external_group(
+        &(app_capability_external_group_t) {
+            .group_id = "cap_tailscale",
+            .display_name = "Tailscale",
+            .llm_visible_by_default = true,
+            .reg = main_register_tailscale_capability,
+        });
+    if (err != ESP_OK) {
+        (void)cap_tailscale_set_provider(NULL);
+        tailscale_service_delete(s_tailscale_service);
+        s_tailscale_service = NULL;
+    }
+    return err;
+}
+
 static int main_get_tailscale_exit_nodes(http_server_tailscale_exit_node_t *nodes, int capacity)
 {
     if (capacity < 0 || (capacity > 0 && !nodes)) {
@@ -610,6 +960,7 @@ void app_main(void)
         ESP_LOGE(TAG, "TS-Claw startup unavailable: %s; continuing with LAN services",
                  esp_err_to_name(ts_claw_err));
     }
+    ESP_ERROR_CHECK(main_init_tailscale_capability());
 #endif
 
     ESP_ERROR_CHECK(app_claw_ui_start());
