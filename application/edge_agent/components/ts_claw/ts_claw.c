@@ -84,6 +84,7 @@ typedef struct {
     uint64_t error_since_ms;
     uint64_t next_start_retry_ms;
     bool upstream_pinned;
+    bool factory_reset_stopped;
     char auth_key[TS_CLAW_AUTH_KEY_LEN];
     char hostname[TS_CLAW_HOSTNAME_LEN];
     char login_server[TS_CLAW_LOGIN_SERVER_LEN];
@@ -402,7 +403,7 @@ static esp_err_t worker_start_microlink(void)
 static bool worker_start_is_allowed(void)
 {
     return s_ts.config.enabled && worker_wifi_snapshot(NULL) &&
-           !s_ts.resource_guard.stopped;
+           !s_ts.resource_guard.stopped && !s_ts.factory_reset_stopped;
 }
 
 static void worker_schedule_start_retry(uint64_t current_ms)
@@ -470,7 +471,9 @@ static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
         return;
     }
     if (s_ts.ml == NULL) {
-        (void)worker_start_with_retry(now_ms());
+        if (worker_start_is_allowed()) {
+            (void)worker_start_with_retry(now_ms());
+        }
         return;
     }
     struct netif *upstream = sta_netif != NULL ?
@@ -788,7 +791,7 @@ static void worker_sample_resources(uint64_t current_ms)
         }
     } else if (action == TS_RESOURCE_GUARD_RETRY) {
         const bool started = s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE &&
-                             s_ts.ml == NULL && worker_wifi_snapshot(NULL) &&
+                             s_ts.ml == NULL && worker_start_is_allowed() &&
                              worker_start_microlink() == ESP_OK;
         ts_resource_guard_retry_completed(&s_ts.resource_guard, current_ms, started);
     }
@@ -831,6 +834,7 @@ static void worker_handle_event(const ts_event_t *event)
                                        event->node_count);
         break;
     case TS_EVENT_FACTORY_RESET:
+        s_ts.factory_reset_stopped = true;
         s_ts.next_start_retry_ms = 0u;
         result = worker_destroy_microlink();
         if (result != ESP_OK) {
@@ -840,10 +844,6 @@ static void worker_handle_event(const ts_event_t *event)
         s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
         s_ts.destroy_retry_ms = 0u;
         result = microlink_factory_reset();
-        if (result == ESP_OK && s_ts.config.enabled && worker_wifi_snapshot(NULL) &&
-            !s_ts.resource_guard.stopped) {
-            result = worker_start_with_retry(now_ms());
-        }
         break;
     default:
         result = ESP_ERR_INVALID_ARG;

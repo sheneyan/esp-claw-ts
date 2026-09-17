@@ -49,6 +49,7 @@ esp_err_t ts_claw_notify_wifi(bool sta_has_ip, esp_netif_t *sta_netif);
 esp_err_t ts_claw_get_status(ts_claw_status_t *out_status);
 /* Returns the number of copied exit nodes, or a negative error value. */
 int ts_claw_get_exit_nodes(microlink_peer_info_t *out_nodes, int capacity);
+/* Stops the runtime, erases its identity, and keeps it stopped until reboot. */
 esp_err_t ts_claw_factory_reset(void);
 
 #ifdef __cplusplus

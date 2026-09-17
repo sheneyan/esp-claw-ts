@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "sdkconfig.h"
 #include "settings_store.h"
 
 typedef struct {
@@ -62,6 +63,11 @@ typedef struct {
 #define APP_DEFAULT_LLM_VISIBLE_CAP_GROUPS   ""
 #define APP_DEFAULT_ENABLED_LUA_MODULES      ""
 #define APP_DEFAULT_TIME_TIMEZONE            "CST-8"
+#ifdef CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
+#define APP_DEFAULT_AP_BEHAVIOR               "close_on_sta"
+#else
+#define APP_DEFAULT_AP_BEHAVIOR               "keep"
+#endif
 #define APP_DEFAULT_TAILSCALE_ENABLED         "false"
 #define APP_DEFAULT_TAILSCALE_AUTH_KEY        ""
 #define APP_DEFAULT_TAILSCALE_HOSTNAME        ""
@@ -74,7 +80,7 @@ static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(wifi_password, "wifi_password", APP_WIFI_PASSWORD),
     APP_CONFIG_FIELD(ap_ssid, "ap_ssid", ""),
     APP_CONFIG_FIELD(ap_password, "ap_password", ""),
-    APP_CONFIG_FIELD(ap_behavior, "ap_behavior", "keep"),
+    APP_CONFIG_FIELD(ap_behavior, "ap_behavior", APP_DEFAULT_AP_BEHAVIOR),
     APP_CONFIG_FIELD(llm_api_key, "llm_api_key", APP_DEFAULT_LLM_API_KEY),
     APP_CONFIG_FIELD(llm_backend_type, "llm_backend", APP_DEFAULT_LLM_BACKEND_TYPE),
     APP_CONFIG_FIELD(llm_model, "llm_model", APP_DEFAULT_LLM_MODEL),

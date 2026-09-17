@@ -235,6 +235,50 @@ static esp_err_t parse_optional_ip4(const char *value, esp_ip4_addr_t *out)
     return esp_netif_str_to_ip4(value, out);
 }
 
+static void capture_first_error(esp_err_t candidate, esp_err_t *first_error)
+{
+    if (candidate != ESP_OK && *first_error == ESP_OK) {
+        *first_error = candidate;
+    }
+}
+
+static esp_err_t restore_ap_network_config(const esp_netif_ip_info_t *ip_info,
+                                           const dhcps_lease_t *lease,
+                                           esp_netif_dhcp_status_t original_status)
+{
+    esp_err_t rollback_err = ESP_OK;
+    esp_netif_dhcp_status_t current_status = ESP_NETIF_DHCP_INIT;
+    dhcps_lease_t restore_lease = *lease;
+    esp_err_t err = esp_netif_dhcps_get_status(s_ap_netif, &current_status);
+    capture_first_error(err, &rollback_err);
+
+    if (err == ESP_OK && current_status == ESP_NETIF_DHCP_STARTED) {
+        err = esp_netif_dhcps_stop(s_ap_netif);
+        capture_first_error(err, &rollback_err);
+    }
+
+    err = esp_netif_set_ip_info(s_ap_netif, ip_info);
+    capture_first_error(err, &rollback_err);
+    err = esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
+                                 ESP_NETIF_REQUESTED_IP_ADDRESS,
+                                 &restore_lease, sizeof(restore_lease));
+    capture_first_error(err, &rollback_err);
+
+    err = esp_netif_dhcps_get_status(s_ap_netif, &current_status);
+    capture_first_error(err, &rollback_err);
+    if (err == ESP_OK && original_status == ESP_NETIF_DHCP_STARTED &&
+        current_status != ESP_NETIF_DHCP_STARTED) {
+        err = esp_netif_dhcps_start(s_ap_netif);
+        capture_first_error(err, &rollback_err);
+    } else if (err == ESP_OK && original_status != ESP_NETIF_DHCP_STARTED &&
+               current_status == ESP_NETIF_DHCP_STARTED) {
+        err = esp_netif_dhcps_stop(s_ap_netif);
+        capture_first_error(err, &rollback_err);
+    }
+
+    return rollback_err;
+}
+
 static esp_err_t apply_ap_network_config(void)
 {
     if (!config_has_explicit_ap_network(&s_config)) return ESP_OK;
@@ -302,14 +346,16 @@ static esp_err_t apply_ap_network_config(void)
     }
     if (err == ESP_OK) err = esp_netif_dhcps_start(s_ap_netif);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to apply AP network config: %s; restoring defaults",
+        ESP_LOGE(TAG, "Failed to apply AP network config: %s; restoring prior state",
                  esp_err_to_name(err));
-        esp_netif_dhcps_stop(s_ap_netif);
-        esp_netif_set_ip_info(s_ap_netif, &original_ip_info);
-        esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
-                               ESP_NETIF_REQUESTED_IP_ADDRESS,
-                               &original_lease, sizeof(original_lease));
-        esp_netif_dhcps_start(s_ap_netif);
+        esp_err_t rollback_err = restore_ap_network_config(&original_ip_info,
+                                                           &original_lease,
+                                                           dhcp_status);
+        if (rollback_err != ESP_OK) {
+            ESP_LOGE(TAG, "AP network rollback is incomplete: %s",
+                     esp_err_to_name(rollback_err));
+            return rollback_err;
+        }
         return err;
     }
     refresh_ap_ip_str();
