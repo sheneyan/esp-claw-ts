@@ -1,5 +1,13 @@
 set(_MICROLINK_PATCH_FILE
     "${CMAKE_CURRENT_LIST_DIR}/../../third_party/patches/microlink-upstream-bind.patch")
+set(_MICROLINK_ORIGINAL_STUN_SHA256
+    "762f7a5eaa6d4b6e1f8be6c4595a8e81893bcadc7c11a3e374d74b7a79894039")
+set(_MICROLINK_ORIGINAL_COORD_SHA256
+    "b5ea85a275c8f5e51ec33d25efad67808cf5de1a39dec7199ff1d1ebcafdc89c")
+set(_MICROLINK_PATCHED_STUN_SHA256
+    "9f2bf58ce17251401e3613e61cc4507219f19447087874a905732f864b09b316")
+set(_MICROLINK_PATCHED_COORD_SHA256
+    "9762c30a0c37cd5f24354f4f95dc49270dc8eeeebf2c758cc69530810b56e9d6")
 
 function(_microlink_assert_upstream_bind_patch source_dir)
     file(READ "${source_dir}/src/ml_stun.c" _stun_source)
@@ -28,18 +36,6 @@ function(_microlink_assert_upstream_bind_patch source_dir)
     endif()
 endfunction()
 
-function(_microlink_assert_exact_unpatched_source source_dir)
-    file(SHA256 "${source_dir}/src/ml_stun.c" _stun_sha256)
-    file(SHA256 "${source_dir}/src/ml_coord.c" _coord_sha256)
-    if(NOT _stun_sha256 STREQUAL
-           "762f7a5eaa6d4b6e1f8be6c4595a8e81893bcadc7c11a3e374d74b7a79894039" OR
-       NOT _coord_sha256 STREQUAL
-           "b5ea85a275c8f5e51ec33d25efad67808cf5de1a39dec7199ff1d1ebcafdc89c")
-        message(FATAL_ERROR
-            "MicroLink sources do not match the exact expected unpatched ml_stun.c/ml_coord.c revisions: ${source_dir}")
-    endif()
-endfunction()
-
 function(microlink_apply_upstream_bind_patch source_dir)
     if(NOT EXISTS "${source_dir}/src/ml_stun.c" OR
        NOT EXISTS "${source_dir}/src/ml_coord.c")
@@ -56,39 +52,20 @@ function(microlink_apply_upstream_bind_patch source_dir)
     endif()
     get_filename_component(_MICROLINK_SOURCE_PARENT "${source_dir}" DIRECTORY)
 
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E env
-                "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
-                "${_MICROLINK_GIT_EXECUTABLE}" apply --reverse --check --no-index
-                --unidiff-zero --ignore-space-change
-                "${_MICROLINK_PATCH_FILE}"
-        WORKING_DIRECTORY "${source_dir}"
-        RESULT_VARIABLE _reverse_check_result
-        OUTPUT_VARIABLE _reverse_check_stdout
-        ERROR_VARIABLE _reverse_check_stderr
-    )
-    if(_reverse_check_result EQUAL 0)
+    file(SHA256 "${source_dir}/src/ml_stun.c" _stun_sha256)
+    file(SHA256 "${source_dir}/src/ml_coord.c" _coord_sha256)
+    if("${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" AND
+       "${_coord_sha256}" STREQUAL "${_MICROLINK_PATCHED_COORD_SHA256}")
         _microlink_assert_upstream_bind_patch("${source_dir}")
         message(STATUS "MicroLink upstream-bind patch already applied and verified at ${source_dir}")
         return()
     endif()
-
-    _microlink_assert_exact_unpatched_source("${source_dir}")
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E env
-                "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
-                "${_MICROLINK_GIT_EXECUTABLE}" apply --check --no-index
-                --unidiff-zero --ignore-space-change
-                "${_MICROLINK_PATCH_FILE}"
-        WORKING_DIRECTORY "${source_dir}"
-        RESULT_VARIABLE _apply_check_result
-        OUTPUT_VARIABLE _apply_check_stdout
-        ERROR_VARIABLE _apply_check_stderr
-    )
-    if(NOT _apply_check_result EQUAL 0)
+    if(NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_STUN_SHA256}" OR
+       NOT "${_coord_sha256}" STREQUAL "${_MICROLINK_ORIGINAL_COORD_SHA256}")
         message(FATAL_ERROR
-            "MicroLink exact sources failed the upstream-bind patch check:\n${_apply_check_stdout}${_apply_check_stderr}\n"
-            "Reverse check:\n${_reverse_check_stdout}${_reverse_check_stderr}")
+            "MicroLink sources are neither the exact original nor patched revisions at ${source_dir}.\n"
+            "Actual ml_stun.c SHA256: ${_stun_sha256}\n"
+            "Actual ml_coord.c SHA256: ${_coord_sha256}")
     endif()
 
     execute_process(
@@ -104,7 +81,16 @@ function(microlink_apply_upstream_bind_patch source_dir)
     )
     if(NOT _apply_result EQUAL 0)
         message(FATAL_ERROR
-            "MicroLink upstream-bind patch failed after a successful check:\n${_apply_stdout}${_apply_stderr}")
+            "MicroLink upstream-bind patch failed:\n${_apply_stdout}${_apply_stderr}")
+    endif()
+    file(SHA256 "${source_dir}/src/ml_stun.c" _stun_sha256)
+    file(SHA256 "${source_dir}/src/ml_coord.c" _coord_sha256)
+    if(NOT "${_stun_sha256}" STREQUAL "${_MICROLINK_PATCHED_STUN_SHA256}" OR
+       NOT "${_coord_sha256}" STREQUAL "${_MICROLINK_PATCHED_COORD_SHA256}")
+        message(FATAL_ERROR
+            "MicroLink patch output does not match the exact expected patched revisions at ${source_dir}.\n"
+            "Actual ml_stun.c SHA256: ${_stun_sha256}\n"
+            "Actual ml_coord.c SHA256: ${_coord_sha256}")
     endif()
     _microlink_assert_upstream_bind_patch("${source_dir}")
     message(STATUS "Applied and verified MicroLink upstream-bind patch at ${source_dir}")
