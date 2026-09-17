@@ -1,5 +1,6 @@
 set(EDGE_AGENT_MAIN_SRCS
     "app_fs.c"
+    "config_persistence.c"
     "edge_agent_version.c"
     "main.c"
 )

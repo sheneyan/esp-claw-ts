@@ -24,6 +24,7 @@
 #include "esp_board_manager_includes.h"
 #include "captive_dns.h"
 #include "cmd_wifi.h"
+#include "config_persistence.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT
@@ -131,33 +132,6 @@ static esp_err_t main_load_config(app_config_t *config)
     return app_config_load(config);
 }
 
-static esp_err_t main_save_config(const app_config_t *config)
-{
-    esp_err_t err;
-    app_claw_config_t *claw_config = NULL;
-
-    ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
-    ESP_RETURN_ON_ERROR(app_config_validate_wifi(config, NULL), TAG, "Invalid Wi-Fi config");
-
-    err = app_config_save(config);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    claw_config = calloc(1, sizeof(*claw_config));
-    if (!claw_config) {
-        ESP_LOGW(TAG, "Failed to allocate Claw config for runtime update");
-        return ESP_OK;
-    }
-    app_config_to_claw(config, claw_config);
-    err = app_claw_update_config(claw_config);
-    free(claw_config);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "Failed to update running Claw config: %s", esp_err_to_name(err));
-    }
-    return ESP_OK;
-}
-
 static void main_copy_claw_to_app_config(const app_claw_config_t *src, app_config_t *dst)
 {
     strlcpy(dst->llm_api_key, src->llm_api_key, sizeof(dst->llm_api_key));
@@ -181,23 +155,34 @@ static void main_copy_claw_to_app_config(const app_claw_config_t *src, app_confi
 static esp_err_t main_save_claw_config(const app_claw_config_t *config, void *user_ctx)
 {
     esp_err_t err;
-    app_config_t *app_config = NULL;
+    app_config_t *before = NULL;
+    app_config_t *after = NULL;
 
     (void)user_ctx;
     ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
 
-    app_config = calloc(1, sizeof(*app_config));
-    ESP_RETURN_ON_FALSE(app_config, ESP_ERR_NO_MEM, TAG, "Failed to allocate app config for Claw save");
+    before = calloc(1, sizeof(*before));
+    if (!before) {
+        return ESP_ERR_NO_MEM;
+    }
+    after = calloc(1, sizeof(*after));
+    if (!after) {
+        free(before);
+        return ESP_ERR_NO_MEM;
+    }
 
-    err = app_config_load(app_config);
+    err = app_config_load(before);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to load config for Claw save: %s", esp_err_to_name(err));
-        free(app_config);
+        free(after);
+        free(before);
         return err;
     }
-    main_copy_claw_to_app_config(config, app_config);
-    err = app_config_save(app_config);
-    free(app_config);
+    memcpy(after, before, sizeof(*after));
+    main_copy_claw_to_app_config(config, after);
+    err = app_config_save_changed(before, after);
+    free(after);
+    free(before);
     return err;
 }
 
@@ -941,7 +926,7 @@ void app_main(void)
         .storage_base_path = app_fs_storage_base_path(),
         .services = {
             .load_config = main_load_config,
-            .save_config = main_save_config,
+            .save_config = main_save_config_changes,
             .get_wifi_status = main_get_wifi_status,
             .restart_device = main_restart_device,
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT

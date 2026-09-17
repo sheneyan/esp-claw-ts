@@ -10,8 +10,10 @@ static int s_failures;
 static int s_batch_calls;
 static int s_single_set_calls;
 static int s_verified_set_calls;
+static size_t s_batch_set_attempts;
 static int s_commit_calls;
 static size_t s_last_batch_count;
+static char s_batch_keys[64][16];
 static char s_last_single_key[16];
 static char s_last_single_value[16];
 static const char *s_fail_key;
@@ -32,8 +34,10 @@ static void reset_fake(void)
     s_batch_calls = 0;
     s_single_set_calls = 0;
     s_verified_set_calls = 0;
+    s_batch_set_attempts = 0u;
     s_commit_calls = 0;
     s_last_batch_count = 0u;
+    memset(s_batch_keys, 0, sizeof(s_batch_keys));
     s_last_single_key[0] = '\0';
     s_last_single_value[0] = '\0';
     s_fail_key = NULL;
@@ -82,6 +86,10 @@ esp_err_t settings_store_set_strings_batch(
 {
     ++s_batch_calls;
     s_last_batch_count = count;
+    for (size_t index = 0u; index < count && index < 64u; ++index) {
+        (void)snprintf(s_batch_keys[index], sizeof(s_batch_keys[index]), "%s",
+                       entries[index].key);
+    }
     if (count == 1u) {
         (void)snprintf(s_last_single_key, sizeof(s_last_single_key), "%s",
                        entries[0].key);
@@ -89,6 +97,7 @@ esp_err_t settings_store_set_strings_batch(
                        entries[0].value ? entries[0].value : "");
     }
     for (size_t index = 0u; index < count; ++index) {
+        ++s_batch_set_attempts;
         if (s_fail_key != NULL && strcmp(entries[index].key, s_fail_key) == 0) {
             return ESP_FAIL;
         }
@@ -225,6 +234,108 @@ static void test_targeted_exit_node_save_failure_and_validation(void)
     }
 }
 
+static bool batch_contains_key(const char *key)
+{
+    for (size_t index = 0u; index < s_last_batch_count && index < 64u; ++index) {
+        if (strcmp(s_batch_keys[index], key) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_changed_save_does_not_rewrite_stale_exit_or_secrets(void)
+{
+    app_config_t before;
+    app_config_t after;
+
+    reset_fake();
+    app_config_load_defaults(&before);
+    (void)snprintf(before.tailscale_exit_node,
+                   sizeof(before.tailscale_exit_node), "100.64.0.1");
+    (void)snprintf(before.tailscale_auth_key,
+                   sizeof(before.tailscale_auth_key), "secret-A");
+    after = before;
+    (void)snprintf(after.wifi_ssid, sizeof(after.wifi_ssid), "patched-wifi");
+
+    /* A targeted writer completed after the HTTP snapshot was loaded. */
+    (void)snprintf(s_committed_exit, sizeof(s_committed_exit), "100.64.0.2");
+    CHECK(app_config_save_changed(&before, &after) == ESP_OK);
+    CHECK(s_batch_calls == 1);
+    CHECK(s_last_batch_count == 1u);
+    CHECK(batch_contains_key("wifi_ssid"));
+    CHECK(!batch_contains_key("ts_exit_node"));
+    CHECK(!batch_contains_key("ts_auth_key"));
+    CHECK(strcmp(s_committed_exit, "100.64.0.2") == 0);
+    CHECK(strcmp(s_committed_wifi, "patched-wifi") == 0);
+}
+
+static void test_changed_exit_is_last_completed_writer(void)
+{
+    app_config_t before;
+    app_config_t after;
+
+    reset_fake();
+    app_config_load_defaults(&before);
+    (void)snprintf(before.tailscale_exit_node,
+                   sizeof(before.tailscale_exit_node), "100.64.0.1");
+    after = before;
+    (void)snprintf(after.tailscale_exit_node,
+                   sizeof(after.tailscale_exit_node), "100.64.0.3");
+    (void)snprintf(s_committed_exit, sizeof(s_committed_exit), "100.64.0.2");
+
+    CHECK(app_config_save_changed(&before, &after) == ESP_OK);
+    CHECK(s_last_batch_count == 1u);
+    CHECK(batch_contains_key("ts_exit_node"));
+    CHECK(strcmp(s_committed_exit, "100.64.0.3") == 0);
+}
+
+static void test_changed_save_noop_and_bounded_validation(void)
+{
+    app_config_t before;
+    app_config_t after;
+
+    reset_fake();
+    app_config_load_defaults(&before);
+    after = before;
+    CHECK(app_config_save_changed(&before, &after) == ESP_OK);
+    CHECK(s_batch_calls == 0);
+
+    memset(after.wifi_ssid, 'X', sizeof(after.wifi_ssid));
+    CHECK(app_config_save_changed(&before, &after) == ESP_ERR_INVALID_ARG);
+    CHECK(s_batch_calls == 0);
+
+    after = before;
+    memset(before.tailscale_auth_key, 'S', sizeof(before.tailscale_auth_key));
+    CHECK(app_config_save_changed(&before, &after) == ESP_ERR_INVALID_ARG);
+    CHECK(s_batch_calls == 0);
+    CHECK(app_config_save_changed(NULL, &after) == ESP_ERR_INVALID_ARG);
+    CHECK(app_config_save_changed(&after, NULL) == ESP_ERR_INVALID_ARG);
+}
+
+static void test_changed_batch_failure_keeps_earlier_immediate_changes(void)
+{
+    app_config_t before;
+    app_config_t after;
+
+    reset_fake();
+    app_config_load_defaults(&before);
+    after = before;
+    (void)snprintf(after.wifi_ssid, sizeof(after.wifi_ssid), "patched-wifi");
+    (void)snprintf(after.tailscale_exit_node,
+                   sizeof(after.tailscale_exit_node), "100.64.0.3");
+    (void)snprintf(after.tailscale_max_peers,
+                   sizeof(after.tailscale_max_peers), "32");
+    s_fail_key = "ts_exit_node";
+
+    CHECK(app_config_save_changed(&before, &after) == ESP_FAIL);
+    CHECK(s_batch_calls == 1);
+    CHECK(s_last_batch_count == 3u);
+    CHECK(s_batch_set_attempts == 2u);
+    CHECK(strcmp(s_committed_wifi, "patched-wifi") == 0);
+    CHECK(strcmp(s_committed_exit, "100.64.0.1") == 0);
+}
+
 int main(void)
 {
     test_full_save_is_one_serialized_batch();
@@ -232,6 +343,10 @@ int main(void)
     test_null_config_is_rejected_without_writes();
     test_targeted_exit_node_save_writes_only_one_key();
     test_targeted_exit_node_save_failure_and_validation();
+    test_changed_save_does_not_rewrite_stale_exit_or_secrets();
+    test_changed_exit_is_last_completed_writer();
+    test_changed_save_noop_and_bounded_validation();
+    test_changed_batch_failure_keeps_earlier_immediate_changes();
 
     if (s_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", s_failures);

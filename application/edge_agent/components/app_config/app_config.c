@@ -522,6 +522,61 @@ esp_err_t app_config_save(const app_config_t *config)
     return err;
 }
 
+static bool app_config_fields_are_terminated(const app_config_t *config)
+{
+    for (size_t index = 0u; index < sizeof(s_fields) / sizeof(s_fields[0]);
+         ++index) {
+        const app_config_field_t *field = &s_fields[index];
+        if (!memchr(app_config_field_cptr(config, field), '\0', field->size)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+esp_err_t app_config_save_changed(const app_config_t *before,
+                                  const app_config_t *after)
+{
+    const size_t field_count = sizeof(s_fields) / sizeof(s_fields[0]);
+    settings_store_string_entry_t *entries;
+    size_t changed_count = 0u;
+    size_t entry_index = 0u;
+    esp_err_t err;
+
+    if (!before || !after || !app_config_fields_are_terminated(before) ||
+        !app_config_fields_are_terminated(after)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t index = 0u; index < field_count; ++index) {
+        if (memcmp(app_config_field_cptr(before, &s_fields[index]),
+                   app_config_field_cptr(after, &s_fields[index]),
+                   s_fields[index].size) != 0) {
+            ++changed_count;
+        }
+    }
+    if (changed_count == 0u) {
+        return ESP_OK;
+    }
+    entries = calloc(changed_count, sizeof(*entries));
+    if (!entries) {
+        return ESP_ERR_NO_MEM;
+    }
+    for (size_t index = 0u; index < field_count; ++index) {
+        if (memcmp(app_config_field_cptr(before, &s_fields[index]),
+                   app_config_field_cptr(after, &s_fields[index]),
+                   s_fields[index].size) == 0) {
+            continue;
+        }
+        entries[entry_index].key = s_fields[index].key;
+        entries[entry_index].value =
+            app_config_field_cptr(after, &s_fields[index]);
+        ++entry_index;
+    }
+    err = settings_store_set_strings_batch(entries, changed_count);
+    free(entries);
+    return err;
+}
+
 esp_err_t app_config_save_tailscale_exit_node(const char *value)
 {
     settings_store_write_state_t write_state;

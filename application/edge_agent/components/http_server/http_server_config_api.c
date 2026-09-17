@@ -306,29 +306,53 @@ static esp_err_t config_get_handler(httpd_req_t *req)
     return send_err;
 }
 
+static esp_err_t config_post_error(httpd_req_t *req, httpd_err_code_t status,
+                                   const char *message, cJSON *root,
+                                   app_config_t *original,
+                                   app_config_t *modified,
+                                   char *validation_error)
+{
+    esp_err_t err = httpd_resp_send_err(req, status, message);
+    cJSON_Delete(root);
+    free(original);
+    free(modified);
+    free(validation_error);
+    return err;
+}
+
 static esp_err_t config_post_handler(httpd_req_t *req)
 {
     http_server_ctx_t *ctx = http_server_ctx();
-    app_config_t *config = NULL;
+    app_config_t *original = NULL;
+    app_config_t *modified = NULL;
+    char *validation_error = NULL;
+    cJSON *root = NULL;
     esp_err_t err;
 
-    config = calloc(1, sizeof(*config));
-    if (!config) {
+    original = calloc(1, sizeof(*original));
+    modified = calloc(1, sizeof(*modified));
+    validation_error = calloc(1, 128u);
+    if (!original || !modified || !validation_error) {
+        free(original);
+        free(modified);
+        free(validation_error);
         httpd_resp_send_500(req);
         return ESP_ERR_NO_MEM;
     }
 
-    err = ctx->services.load_config(config);
+    err = ctx->services.load_config(original);
     if (err != ESP_OK) {
-        free(config);
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to load config");
+        return config_post_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                 "Failed to load config", root, original,
+                                 modified, validation_error);
     }
+    memcpy(modified, original, sizeof(*modified));
 
-    cJSON *root = NULL;
     err = http_server_parse_json_body(req, &root);
     if (err != ESP_OK) {
-        free(config);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON body");
+        return config_post_error(req, HTTPD_400_BAD_REQUEST,
+                                 "Invalid JSON body", root, original,
+                                 modified, validation_error);
     }
 
     /* Partial writes: only fields present in the JSON body are applied.
@@ -346,36 +370,33 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         }
         recognised_count++;
 
-        char update_error[64];
         bool is_string = cJSON_IsString(item);
         const char *value = is_string ? item->valuestring : NULL;
         if (!app_config_string_update_validate(is_string, value, field->size,
-                                               update_error, sizeof(update_error))) {
-            cJSON_Delete(root);
-            free(config);
-            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, update_error);
+                                               validation_error, 128u)) {
+            return config_post_error(req, HTTPD_400_BAD_REQUEST,
+                                     validation_error, root, original,
+                                     modified, validation_error);
         }
         if (strcmp(field->name, "llm_max_tokens") == 0 ||
                 strcmp(field->name, "llm_default_image_max_bytes") == 0) {
             if (!is_positive_decimal_string(item->valuestring)) {
-                cJSON_Delete(root);
-                free(config);
-                return httpd_resp_send_err(req,
-                                           HTTPD_400_BAD_REQUEST,
-                                           strcmp(field->name, "llm_max_tokens") == 0 ?
-                                               "llm_max_tokens must be a positive integer" :
-                                               "llm_default_image_max_bytes must be a positive integer");
+                return config_post_error(
+                    req, HTTPD_400_BAD_REQUEST,
+                    strcmp(field->name, "llm_max_tokens") == 0
+                        ? "llm_max_tokens must be a positive integer"
+                        : "llm_default_image_max_bytes must be a positive integer",
+                    root, original, modified, validation_error);
             }
         }
         if ((strcmp(field->name, "llm_supports_tools") == 0 ||
                 strcmp(field->name, "llm_supports_vision") == 0 ||
                 strcmp(field->name, "llm_image_remote_url_only") == 0) &&
                 !is_boolean_string(item->valuestring)) {
-            cJSON_Delete(root);
-            free(config);
-            return httpd_resp_send_err(req,
-                                       HTTPD_400_BAD_REQUEST,
-                                       "LLM boolean fields must be true/false");
+            return config_post_error(req, HTTPD_400_BAD_REQUEST,
+                                     "LLM boolean fields must be true/false",
+                                     root, original, modified,
+                                     validation_error);
         }
     }
 
@@ -388,34 +409,36 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         if (field->write_only && item->valuestring[0] == '\0') {
             continue;
         }
-        strlcpy(field_mutable(config, field), item->valuestring, field->size);
+        strlcpy(field_mutable(modified, field), item->valuestring, field->size);
         applied_count++;
     }
 
-    cJSON_Delete(root);
-
     if (recognised_count == 0) {
-        free(config);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                   "Request did not contain any recognised fields");
+        return config_post_error(req, HTTPD_400_BAD_REQUEST,
+                                 "Request did not contain any recognised fields",
+                                 root, original, modified, validation_error);
     }
 
     const char *wifi_config_error = NULL;
-    err = validate_wifi_config_fields(config, &wifi_config_error);
+    err = validate_wifi_config_fields(modified, &wifi_config_error);
     if (err != ESP_OK) {
-        free(config);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, wifi_config_error);
+        return config_post_error(req, HTTPD_400_BAD_REQUEST,
+                                 wifi_config_error, root, original, modified,
+                                 validation_error);
     }
 
-    char tailscale_config_error[128];
-    err = app_config_validate_tailscale(config, tailscale_config_error, sizeof(tailscale_config_error));
+    err = app_config_validate_tailscale(modified, validation_error, 128u);
     if (err != ESP_OK) {
-        free(config);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, tailscale_config_error);
+        return config_post_error(req, HTTPD_400_BAD_REQUEST,
+                                 validation_error, root, original, modified,
+                                 validation_error);
     }
 
-    err = ctx->services.save_config(config);
-    free(config);
+    err = ctx->services.save_config(original, modified);
+    cJSON_Delete(root);
+    free(original);
+    free(modified);
+    free(validation_error);
     if (err != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config");
     }

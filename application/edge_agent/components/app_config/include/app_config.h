@@ -68,6 +68,12 @@ esp_err_t app_config_init(void);
 void app_config_load_defaults(app_config_t *config);
 esp_err_t app_config_load(app_config_t *config);
 esp_err_t app_config_save(const app_config_t *config);
+/*
+ * Saves only fields whose fixed buffers differ. The underlying serialized
+ * settings batch can retain earlier field writes if a later NVS write fails.
+ */
+esp_err_t app_config_save_changed(const app_config_t *before,
+                                  const app_config_t *after);
 /* Saves only ts_exit_node and verifies the persisted readback. */
 esp_err_t app_config_save_tailscale_exit_node(const char *value);
 esp_err_t app_config_validate_wifi(const app_config_t *config, const char **message);
