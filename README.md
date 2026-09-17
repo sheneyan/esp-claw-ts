@@ -44,7 +44,23 @@
 - Tailnet access to the ESP-Claw web interface and WebSocket chat
 - Optional exit-node use for device-originated traffic
 - Wi-Fi fallback when the selected exit node is unavailable
+- Agent-aware Tailscale diagnostics and confirmed live Exit Node controls through
+  the `tailscale_network` Skill and `cap_tailscale` Capability
 - A dedicated `esp32_s3_n16r8_ts_claw` board profile
+
+Activating `tailscale_network` exposes five tools: `tailscale_status`,
+`tailscale_list_exit_nodes`, `tailscale_set_exit_node`,
+`tailscale_clear_exit_node`, and `tailscale_reconnect`. Status includes bounded
+DERP relay diagnostics; these measurements describe this device's Tailscale
+relay path, not an Internet traceroute. Agent mutations require an explicit
+request from the current user and `user_confirmed: true`; a direct click in the
+web interface is the user's confirmation. The agent and web interface use the
+same live-control service. Exit Node set/clear takes effect without a reboot and
+is persisted only after verified success; offline nodes and empty selections
+are not silently accepted, and failures can report fallback or rollback state.
+Hostname, auth key, login server, enablement, and device identity remain
+settings-only operations. See the guide for the complete behavior and failure
+boundaries.
 
 This project is not affiliated with or endorsed by Espressif or Tailscale.
 The original ESP-Claw project is maintained at

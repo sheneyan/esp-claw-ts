@@ -43,7 +43,19 @@
 - 通过 tailnet 访问 ESP-Claw 网页和 WebSocket 聊天
 - 设备自身的出站流量可选使用 exit node
 - 所选 exit node 不可用时回退普通 Wi-Fi
+- 通过 `tailscale_network` Skill 和 `cap_tailscale` Capability 提供智能体可感知的
+  Tailscale 诊断及经确认的实时 Exit Node 控制
 - 专用的 `esp32_s3_n16r8_ts_claw` 板型配置
+
+激活 `tailscale_network` 后会暴露五个工具：`tailscale_status`、
+`tailscale_list_exit_nodes`、`tailscale_set_exit_node`、
+`tailscale_clear_exit_node` 和 `tailscale_reconnect`。状态结果包含有界的 DERP
+中继诊断；这些数据描述本设备的 Tailscale 中继路径，不是互联网 traceroute。智能体执行
+变更必须基于当前用户的明确请求，并传入 `user_confirmed: true`；用户直接点击网页按钮
+本身就是确认。智能体与网页共用同一个实时控制服务。Exit Node 的设置和清除无需重启、
+在确认成功后才持久化；离线节点和空选择不会被静默接受，失败结果可能显示 fallback 或
+rollback 状态。主机名、Auth Key、登录服务器、启用状态和设备身份仍只能通过设置页面
+修改。完整行为及失败边界请查看指南。
 
 本项目与乐鑫、Tailscale 均无隶属或背书关系。原始 ESP-Claw 项目由
 [`espressif/esp-claw`](https://github.com/espressif/esp-claw) 维护。

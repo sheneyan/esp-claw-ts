@@ -163,10 +163,52 @@ curl --noproxy '*' -fsS http://设备TAILNET_IP/api/webim/status
 页面和 WebSocket。仅仅 ping 成功，并不能证明浏览器代理、ACL、HTTP 与 WebSocket
 链路全部正常。
 
+## 智能体可感知的 Tailscale 控制
+
+内置的 `tailscale_network` Skill 会激活 `cap_tailscale` Capability Group，并让
+智能体理解以下五个工具：
+
+| 工具 | 用途 |
+| --- | --- |
+| `tailscale_status` | 读取连接、所选 Exit Node、实际出口、错误、节点数、计时、重连计数和有界的 DERP 诊断。 |
+| `tailscale_list_exit_nodes` | 列出当前可见的 Exit Node 候选，包括在线/直连状态及已知的 DERP 区域。 |
+| `tailscale_set_exit_node` | 按规范 CGNAT IP 或无歧义的主机名选择一个在线节点。 |
+| `tailscale_clear_exit_node` | 关闭 Exit Node 路由，让设备自身流量恢复使用 Wi-Fi。 |
+| `tailscale_reconnect` | 在不修改注册设置的情况下重连本设备的 Tailscale 运行时。 |
+
+示例请求包括“查看我的 Tailscale 状态和 DERP 诊断”和“列出可用的 Exit Node”。
+这些读取操作无需确认。运行时能够提供时，`tailscale_status` 会返回当前/默认 DERP
+区域、数量有上限的各区域 RTT 样本、心跳/控制消息时长及重连计数。Exit Node 列表
+为空表示本节点当前看不到候选，并不能证明整个 tailnet 中不存在 Exit Node。
+
+例如，状态读取使用空对象，并可能返回下面这样的 DERP 摘要（区域名称和 RTT 来自运行时
+实测）：
+
+```text
+tool: tailscale_status
+input: {}
+result excerpt: {"connected":true,"path":"derp","derp":{"active":{"id":4,"name":"<region>"},"rtts":[{"region":{"id":4,"name":"<region>"},"rtt_ms":84,"timed_out":false}]}}
+```
+
+DERP 数据是 ESP32 的 Tailscale 运行时针对中继路径提供的遥测，不是逐跳的互联网
+traceroute，也不能列出设备与目标之间的每一段网络。使用中继或某个 RTT 样本超时是
+排障证据，但单独出现时不能证明连接已经损坏。
+
+智能体发起任何变更，都必须来自当前用户在当前交互中的明确请求，且工具调用必须包含
+`user_confirmed: true`。智能体不得从之前的消息或诊断结果推断授权。用户在网页中直接
+点击选择、清除 Exit Node 或重连按钮，就已经直接确认了该网页操作，因此 HTTP 请求
+不使用智能体专属的 `user_confirmed` 字段。两条路径共用同一个串行化实时控制服务，
+并使用相同的操作结果模型。
+
+智能体不能修改设备主机名、Auth Key、登录服务器、启用状态或设备身份；这些仍是网页
+中的设置项。注册、服务器校验和身份管理不属于智能体工具。
+
 ## Exit Node 行为
 
 初始配置先保持 **Exit Node：不使用**。设备连接后，Tailscale 页面会列出当前节点
-能够看到的 exit node。选择一个节点、保存并重启。
+能够看到的 exit node。选择节点、清除选择，或让已确认的智能体执行任一操作，都会
+立即生效；只修改 Exit Node 无需重启。仅当运行时确认到达请求状态后，成功操作才会
+持久化。
 
 状态页会区分“配置的节点”和“实际出口”：
 
@@ -177,6 +219,12 @@ curl --noproxy '*' -fsS http://设备TAILNET_IP/api/webim/status
 恢复过程采用保守策略：exit node 必须连续探测成功后才会重新切回。这个策略只控制
 ESP32 自身发起的出站流量；它不会把 ESP32 宣告为 exit node，也不会替其他局域网
 转发流量。
+
+离线候选会被拒绝，不会被选中。设置操作也会拒绝空选择；要停用 Exit Node，必须使用
+明确的清除操作。若运行时应用失败或超时，操作会报告失败，运行时控制会尝试恢复之前
+的安全状态。若实时切换后持久化失败，共享服务会尝试把运行时回滚到上一次已持久化的
+选择，并报告是否尝试回滚及是否恢复。持久化结果无法确认时，当前运行时可能已经恢复，
+但下次重启仍可能使用不同的选择；不得把 fallback、部分生效或回滚失败描述成成功。
 
 fallback 状态机和出口选择已有主机测试覆盖；实机验证过普通 Wi-Fi 出口及配置
 exit-node 的路径，但不同网络环境在依赖该行为前，仍应自行进行受控的在线/离线测试。
@@ -211,7 +259,8 @@ curl --noproxy '*' -v http://设备TAILNET_IP/api/webim/status
 
 ### 已保存配置，但设备仍显示未连接
 
-修改 Tailscale 设置后需要重启。重启后查看 Tailscale 页面或
+修改启用状态、Auth Key、主机名、登录服务器或最大节点数等注册设置后需要重启；实时
+设置/清除 Exit Node 及重连操作无需重启。然后查看 Tailscale 页面或
 `/api/tailscale/status`，并逐项确认：
 
 - Wi-Fi STA 已连接，DNS 和时间正常

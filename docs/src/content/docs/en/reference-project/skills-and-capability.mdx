@@ -54,6 +54,14 @@ They link through `metadata.cap_groups` in `SKILL.md` frontmatter:
 
 Skill documents are no longer injected into the system prompt. They enter context through tool results, keeping the prompt-cache prefix stable.
 
+### Concrete example: `tailscale_network`
+
+The `tailscale_network` Skill binds `metadata.cap_groups: ["cap_tailscale"]`, so activation adds its safety guidance and exposes five tools: `tailscale_status`, `tailscale_list_exit_nodes`, `tailscale_set_exit_node`, `tailscale_clear_exit_node`, and `tailscale_reconnect`.
+
+Its read tools expose device status, Exit Node candidates, and bounded DERP relay diagnostics. DERP telemetry describes this device's relay path; it is not an Internet traceroute.
+
+Its mutation tools require an explicit request from the current user and `user_confirmed: true`. Hostname, auth key, login server, enablement, and device identity stay on the settings page; activating the Skill does not grant those mutations.
+
 <Aside type="tip">
   A capability group without complex usage can skip a Skill and be added to `claw_cap_set_llm_visible_groups` for always-on exposure.
 </Aside>

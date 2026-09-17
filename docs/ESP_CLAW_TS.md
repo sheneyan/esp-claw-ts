@@ -181,10 +181,62 @@ the WebSocket path as well as the HTTP page. A successful ping alone does not
 prove that browser proxy rules, ACLs, HTTP, and WebSocket traffic are all
 working.
 
+## Agent-Aware Tailscale Controls
+
+The built-in `tailscale_network` Skill activates the `cap_tailscale` Capability
+Group and teaches the agent how to use these five tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `tailscale_status` | Read connection, selected Exit Node, actual egress, errors, peer counts, timing, reconnect counters, and bounded DERP diagnostics. |
+| `tailscale_list_exit_nodes` | List currently visible Exit Node candidates, including online/direct state and DERP region when known. |
+| `tailscale_set_exit_node` | Select an online node by canonical CGNAT IP or an unambiguous hostname selector. |
+| `tailscale_clear_exit_node` | Disable Exit Node routing and return device-originated traffic to Wi-Fi. |
+| `tailscale_reconnect` | Reconnect this device's Tailscale runtime without changing registration settings. |
+
+Example user requests are “Show my Tailscale status and DERP diagnostics” and
+“List the available Exit Nodes.” The corresponding reads require no
+confirmation. `tailscale_status` reports the active/default DERP regions,
+bounded per-region RTT samples, heartbeat/control ages, and reconnect counters
+when the runtime provides them. An empty Exit Node list means that no candidates
+are currently visible to this peer; it does not prove that the tailnet has no
+Exit Nodes.
+
+For example, a status read uses an empty object and can return a DERP excerpt
+like this (region names and RTTs are runtime measurements):
+
+```text
+tool: tailscale_status
+input: {}
+result excerpt: {"connected":true,"path":"derp","derp":{"active":{"id":4,"name":"<region>"},"rtts":[{"region":{"id":4,"name":"<region>"},"rtt_ms":84,"timed_out":false}]}}
+```
+
+DERP data is relay-specific telemetry from the ESP32's Tailscale runtime. It is
+not a hop-by-hop Internet traceroute, and it does not identify every network
+segment between the device and a destination. A relayed path or a timed-out RTT
+sample is diagnostic evidence, not by itself proof of a broken connection.
+
+Every agent-requested mutation requires an explicit request from the current
+user in the current interaction, and the tool call must contain
+`user_confirmed: true`. The agent must not infer permission from earlier
+messages or from a diagnostic result. A user clicking an Exit Node, clear, or
+reconnect control in the web interface directly confirms that web action, so
+the HTTP request does not use the agent-only `user_confirmed` field. Both paths
+call the same serialized live-control service and report the same operational
+result model.
+
+The agent cannot change the device hostname, auth key, login server, enabled
+state, or device identity. Those remain settings-only operations in the web
+interface. Registration, server validation, and identity management are not
+agent tools.
+
 ## Exit Node Behavior
 
 Start with **Exit Node: None**. After the device is connected, the Tailscale
-page lists exit nodes visible to this peer. Select one, save, and restart.
+page lists exit nodes visible to this peer. Selecting a node, clearing the
+selection, or asking the confirmed agent to do either applies immediately; an
+Exit Node-only change does not require a restart. A successful operation is
+persisted only after the runtime confirms the requested state.
 
 The status page distinguishes the configured node from actual egress:
 
@@ -198,6 +250,17 @@ Recovery is intentionally conservative: an exit node must show repeated
 successful probes before egress switches back to it. The fallback policy
 controls traffic created by the ESP32 itself; it does not advertise the ESP32
 as an exit node and does not route another LAN through the board.
+
+An offline candidate is rejected instead of being selected. An empty selector
+is also rejected by the set action; use the explicit clear action to disable
+Exit Node routing. If runtime application fails or times out, the operation is
+reported as failed and the runtime control attempts to recover its previous
+safe state. If persistence fails after a live switch, the shared service tries
+to roll the runtime back to the previously persisted selection and reports
+whether rollback was attempted and recovered. If persistence is unverified,
+the current runtime may be restored while a later reboot still uses a different
+selection; never interpret fallback, partial application, or rollback failure
+as success.
 
 The fallback state machine and egress selection have host-test coverage. The
 tested device was observed with normal Wi-Fi egress and a configured exit-node
@@ -237,8 +300,10 @@ profile are the most reliable diagnostic.
 
 ### Configuration is saved but the device is disconnected
 
-Restart after changing Tailscale settings. Then check `/api/tailscale/status`
-or the Tailscale page. Confirm all of the following:
+Restart after changing registration settings such as enablement, auth key,
+hostname, login server, or maximum peers. Live Exit Node set/clear and reconnect
+actions do not require a restart. Then check `/api/tailscale/status` or the
+Tailscale page. Confirm all of the following:
 
 - Wi-Fi station is connected and has working DNS/time
 - auth key was valid when registration occurred
