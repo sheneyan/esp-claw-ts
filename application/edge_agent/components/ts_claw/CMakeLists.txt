@@ -13,6 +13,7 @@ if(_TS_CLAW_BOARD_MARKER)
             "ts_claw_diagnostics.c"
             "ts_claw_policy.c"
             "ts_claw_route_hook.c"
+            "ts_claw_runtime_control.c"
         INCLUDE_DIRS "include"
         PRIV_INCLUDE_DIRS "."
         REQUIRES

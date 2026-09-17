@@ -19,6 +19,7 @@
 #include "microlink.h"
 #include "ping/ping_sock.h"
 #include "ts_claw_route_hook.h"
+#include "ts_claw_runtime_control.h"
 
 #define TS_CLAW_AUTH_KEY_LEN 320
 #define TS_CLAW_HOSTNAME_LEN 64
@@ -50,6 +51,8 @@ typedef enum {
     TS_EVENT_WIFI_CHANGED,
     TS_EVENT_GET_DIAGNOSTICS,
     TS_EVENT_GET_EXIT_NODES,
+    TS_EVENT_SET_EXIT_NODE,
+    TS_EVENT_RECONNECT,
     TS_EVENT_FACTORY_RESET,
 } ts_event_type_t;
 
@@ -61,6 +64,9 @@ typedef struct {
     ts_claw_peer_t *nodes;
     size_t node_capacity;
     size_t *node_count;
+    uint32_t requested_exit_node_ip;
+    uint32_t timeout_ms;
+    ts_claw_runtime_result_t *runtime_result;
 } ts_event_t;
 
 typedef struct {
@@ -93,6 +99,11 @@ typedef struct {
     uint64_t next_start_retry_ms;
     bool upstream_pinned;
     bool factory_reset_stopped;
+    uint32_t desired_exit_node_ip;
+    ts_claw_runtime_control_t runtime_control;
+    SemaphoreHandle_t runtime_reply_signal;
+    esp_err_t *runtime_reply_result;
+    ts_claw_runtime_result_t *runtime_reply_output;
     char auth_key[TS_CLAW_AUTH_KEY_LEN];
     char hostname[TS_CLAW_HOSTNAME_LEN];
     char login_server[TS_CLAW_LOGIN_SERVER_LEN];
@@ -106,6 +117,7 @@ static ts_claw_context_t s_ts;
 static esp_err_t send_sync_event(ts_event_t *event);
 static void worker_schedule_destroy_retry(ts_destroy_retry_mode_t mode,
                                           uint64_t current_ms);
+static esp_err_t worker_destroy_microlink_internal(bool retire_probe);
 
 static uint64_t now_ms(void)
 {
@@ -316,7 +328,7 @@ static void microlink_state_changed(microlink_t *ml,
     }
 }
 
-static esp_err_t worker_destroy_microlink(void)
+static esp_err_t worker_destroy_microlink_internal(bool retire_probe)
 {
     if (s_ts.ml == NULL) {
         return ESP_OK;
@@ -327,9 +339,11 @@ static esp_err_t worker_destroy_microlink(void)
     set_exit_probe_accept_results(false);
     set_exit_usable(false);
     ts_claw_route_hook_set_tunnel_available(false);
-    esp_err_t retire_err = worker_retire_exit_probe();
-    if (retire_err != ESP_OK) {
-        return retire_err;
+    if (retire_probe) {
+        esp_err_t retire_err = worker_retire_exit_probe();
+        if (retire_err != ESP_OK) {
+            return retire_err;
+        }
     }
     (void)microlink_pin_wg_output_netif(ml, NULL);
     esp_err_t err = microlink_stop(ml);
@@ -348,6 +362,11 @@ static esp_err_t worker_destroy_microlink(void)
     return ESP_OK;
 }
 
+static esp_err_t worker_destroy_microlink(void)
+{
+    return worker_destroy_microlink_internal(true);
+}
+
 static esp_err_t worker_start_microlink(void)
 {
     struct netif *upstream = worker_lwip_netif_snapshot();
@@ -363,8 +382,8 @@ static esp_err_t worker_start_microlink(void)
         .enable_stun = true,
         .enable_disco = true,
         .max_peers = s_ts.config.max_peers,
-        .priority_peer_ip = s_ts.config.exit_node_ip,
-        .exit_node_ip = s_ts.config.exit_node_ip,
+        .priority_peer_ip = s_ts.desired_exit_node_ip,
+        .exit_node_ip = s_ts.desired_exit_node_ip,
         .ctrl_host = s_ts.config.login_server,
         .advertise_routes = NULL,
         .netcheck_override_enabled = false,
@@ -406,6 +425,135 @@ static esp_err_t worker_start_microlink(void)
     ts_claw_route_hook_set_upstream_pinned(false);
     set_last_error("");
     return ESP_OK;
+}
+
+static esp_err_t runtime_retire_probe(void *ctx)
+{
+    (void)ctx;
+    return worker_retire_exit_probe();
+}
+
+static esp_err_t runtime_destroy(void *ctx)
+{
+    (void)ctx;
+    return worker_destroy_microlink_internal(false);
+}
+
+static esp_err_t runtime_set_desired_ip(void *ctx, uint32_t desired_ip)
+{
+    (void)ctx;
+    set_exit_probe_accept_results(false);
+    set_exit_usable(false);
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    s_ts.desired_exit_node_ip = desired_ip;
+    s_ts.status.exit_node_ip = desired_ip;
+    ts_exit_policy_init(&s_ts.exit_policy, desired_ip != 0u);
+    update_exit_status_locked();
+    xSemaphoreGive(s_ts.lock);
+    ts_claw_route_hook_set_exit_active(false);
+    return ESP_OK;
+}
+
+static esp_err_t runtime_start(void *ctx)
+{
+    (void)ctx;
+    if (s_ts.resource_guard.stopped || s_ts.factory_reset_stopped) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_ts.next_start_retry_ms = 0u;
+    s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
+    s_ts.destroy_retry_ms = 0u;
+    esp_err_t error = worker_start_microlink();
+    if (error != ESP_OK &&
+        s_ts.destroy_retry_mode == TS_DESTROY_RETRY_RESTART) {
+        s_ts.destroy_retry_mode = TS_DESTROY_RETRY_STOP;
+    }
+    return error;
+}
+
+static esp_err_t runtime_rebind(void *ctx)
+{
+    (void)ctx;
+    if (s_ts.ml == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return microlink_rebind(s_ts.ml);
+}
+
+static esp_err_t runtime_observe_connected(void *ctx, bool *connected)
+{
+    (void)ctx;
+    if (connected == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    *connected = s_ts.status.connected;
+    xSemaphoreGive(s_ts.lock);
+    return ESP_OK;
+}
+
+static esp_err_t runtime_observe_exit_active(void *ctx, bool *active)
+{
+    (void)ctx;
+    if (active == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    *active = s_ts.status.exit_state == TS_EXIT_ACTIVE &&
+              ts_exit_policy_routes_public(&s_ts.exit_policy);
+    xSemaphoreGive(s_ts.lock);
+    return ESP_OK;
+}
+
+static const ts_claw_runtime_ops_t s_runtime_ops = {
+    .retire_probe = runtime_retire_probe,
+    .destroy = runtime_destroy,
+    .set_desired_ip = runtime_set_desired_ip,
+    .start = runtime_start,
+    .rebind = runtime_rebind,
+    .observe_connected = runtime_observe_connected,
+    .observe_exit_active = runtime_observe_exit_active,
+};
+
+static void worker_complete_runtime_operation(void)
+{
+    esp_err_t result = ESP_FAIL;
+    ts_claw_runtime_completion_t completion;
+    if (!ts_claw_runtime_control_take_completion(
+            &s_ts.runtime_control, &result, &completion)) {
+        return;
+    }
+
+    if (s_ts.runtime_reply_output != NULL) {
+        ts_claw_runtime_result_t *out = s_ts.runtime_reply_output;
+        memset(out, 0, sizeof(*out));
+        out->selected_exit_node_ip = completion.selected_exit_node_ip;
+        out->rollback_attempted = completion.rollback_attempted;
+        out->rollback_recovered = completion.rollback_recovered;
+        if (result == ESP_OK && completion.selected_exit_node_ip == 0u) {
+            out->exit_state = TS_EXIT_DISABLED;
+            copy_string(out->egress, sizeof(out->egress), "sta");
+        } else if (result == ESP_OK && completion.exit_active) {
+            out->exit_state = TS_EXIT_ACTIVE;
+            copy_string(out->egress, sizeof(out->egress), "exit");
+        } else {
+            xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+            out->exit_state = s_ts.status.exit_state;
+            copy_string(out->egress, sizeof(out->egress), s_ts.status.egress);
+            xSemaphoreGive(s_ts.lock);
+        }
+    }
+
+    SemaphoreHandle_t reply_signal = s_ts.runtime_reply_signal;
+    esp_err_t *reply_result = s_ts.runtime_reply_result;
+    s_ts.runtime_reply_signal = NULL;
+    s_ts.runtime_reply_result = NULL;
+    s_ts.runtime_reply_output = NULL;
+    if (reply_signal != NULL && reply_result != NULL) {
+        *reply_result = result;
+        xSemaphoreGive(reply_signal);
+    }
 }
 
 static bool worker_start_is_allowed(void)
@@ -476,6 +624,9 @@ static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
     }
 
     if (s_ts.resource_guard.stopped) {
+        return;
+    }
+    if (ts_claw_runtime_control_is_active(&s_ts.runtime_control)) {
         return;
     }
     if (s_ts.ml == NULL) {
@@ -652,7 +803,7 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
     config.interface = netif_get_index(wg_netif);
     IP_SET_TYPE_VAL(config.target_addr, IPADDR_TYPE_V4);
     ip4_addr_set_u32(ip_2_ip4(&config.target_addr),
-                     lwip_htonl(s_ts.config.exit_node_ip));
+                     lwip_htonl(s_ts.desired_exit_node_ip));
 
     const esp_ping_callbacks_t callbacks = {
         .on_ping_success = exit_probe_on_success,
@@ -666,7 +817,7 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
         xSemaphoreTake(s_ts.lock, portMAX_DELAY);
         s_ts.exit_ping = ping;
         s_ts.exit_ping_wg_netif = wg_netif;
-        s_ts.exit_ping_target = s_ts.config.exit_node_ip;
+        s_ts.exit_ping_target = s_ts.desired_exit_node_ip;
         s_ts.exit_ping_accept_results = false;
         s_ts.exit_ping_stop_requested = false;
         s_ts.exit_ping_quiesced = false;
@@ -706,7 +857,7 @@ static void worker_manage_exit_probe(uint64_t current_ms)
     ts_claw_route_hook_set_tunnel_available(tunnel_available);
 
     const bool ready = s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE &&
-                       s_ts.config.exit_node_ip != 0u && tunnel_available &&
+                       s_ts.desired_exit_node_ip != 0u && tunnel_available &&
                        s_ts.upstream_pinned &&
                        microlink_selected_exit_ready(s_ts.ml);
     if (!ready) {
@@ -722,7 +873,7 @@ static void worker_manage_exit_probe(uint64_t current_ms)
     const bool stop_requested = s_ts.exit_ping_stop_requested;
     xSemaphoreGive(s_ts.lock);
 
-    if (ping != NULL && (ping_target != s_ts.config.exit_node_ip ||
+    if (ping != NULL && (ping_target != s_ts.desired_exit_node_ip ||
                          ping_wg_netif != wg_netif || stop_requested)) {
         set_exit_probe_accept_results(false);
         set_exit_usable(false);
@@ -909,6 +1060,7 @@ static esp_err_t worker_get_exit_nodes(ts_claw_peer_t *nodes,
 static void worker_handle_event(const ts_event_t *event)
 {
     esp_err_t result = ESP_OK;
+    bool defer_reply = false;
 
     switch (event->type) {
     case TS_EVENT_WIFI_CHANGED:
@@ -923,7 +1075,34 @@ static void worker_handle_event(const ts_event_t *event)
         result = worker_get_exit_nodes(event->nodes, event->node_capacity,
                                        event->node_count);
         break;
+    case TS_EVENT_SET_EXIT_NODE:
+        result = ts_claw_runtime_control_begin_set(
+            &s_ts.runtime_control, s_ts.desired_exit_node_ip,
+            event->requested_exit_node_ip, event->timeout_ms, now_ms());
+        if (result == ESP_OK) {
+            s_ts.runtime_reply_signal = event->reply_signal;
+            s_ts.runtime_reply_result = event->reply_result;
+            s_ts.runtime_reply_output = event->runtime_result;
+            defer_reply = true;
+            worker_complete_runtime_operation();
+        }
+        break;
+    case TS_EVENT_RECONNECT:
+        result = ts_claw_runtime_control_begin_reconnect(
+            &s_ts.runtime_control, event->timeout_ms, now_ms());
+        if (result == ESP_OK) {
+            s_ts.runtime_reply_signal = event->reply_signal;
+            s_ts.runtime_reply_result = event->reply_result;
+            s_ts.runtime_reply_output = NULL;
+            defer_reply = true;
+            worker_complete_runtime_operation();
+        }
+        break;
     case TS_EVENT_FACTORY_RESET:
+        if (ts_claw_runtime_control_is_active(&s_ts.runtime_control)) {
+            result = ESP_ERR_INVALID_STATE;
+            break;
+        }
         s_ts.factory_reset_stopped = true;
         s_ts.next_start_retry_ms = 0u;
         result = worker_destroy_microlink();
@@ -940,7 +1119,7 @@ static void worker_handle_event(const ts_event_t *event)
         break;
     }
 
-    if (event->reply_signal != NULL) {
+    if (event->reply_signal != NULL && !defer_reply) {
         *event->reply_result = result;
         xSemaphoreGive(event->reply_signal);
     }
@@ -960,13 +1139,21 @@ static void ts_claw_worker(void *arg)
         worker_consume_pending_wifi();
 
         const uint64_t current_ms = now_ms();
-        worker_try_destroy_retry(current_ms);
-        worker_try_start_retry(current_ms);
+        const bool runtime_active =
+            ts_claw_runtime_control_is_active(&s_ts.runtime_control);
+        if (!runtime_active) {
+            worker_try_destroy_retry(current_ms);
+            worker_try_start_retry(current_ms);
+        }
         worker_try_pin_upstream(current_ms);
         worker_manage_exit_probe(current_ms);
         worker_refresh_status();
-        worker_check_error(current_ms);
-        worker_sample_resources(current_ms);
+        ts_claw_runtime_control_advance(&s_ts.runtime_control, current_ms);
+        worker_complete_runtime_operation();
+        if (!ts_claw_runtime_control_is_active(&s_ts.runtime_control)) {
+            worker_check_error(current_ms);
+            worker_sample_resources(current_ms);
+        }
     }
 }
 
@@ -1010,10 +1197,12 @@ esp_err_t ts_claw_init(const ts_claw_config_t *config)
     s_ts.status.enabled = config->enabled;
     s_ts.status.auth_key_set = s_ts.auth_key[0] != '\0';
     s_ts.status.exit_node_ip = config->exit_node_ip;
+    s_ts.desired_exit_node_ip = config->exit_node_ip;
     s_ts.status.exit_state = config->exit_node_ip != 0u ? TS_EXIT_PENDING : TS_EXIT_DISABLED;
     copy_string(s_ts.status.egress, sizeof(s_ts.status.egress), "unavailable");
     ts_resource_guard_init(&s_ts.resource_guard);
     ts_exit_policy_init(&s_ts.exit_policy, config->exit_node_ip != 0u);
+    ts_claw_runtime_control_init(&s_ts.runtime_control, &s_runtime_ops, NULL);
     ts_claw_route_hook_reset();
 
     BaseType_t created = xTaskCreate(ts_claw_worker, "ts_claw", TS_CLAW_WORKER_STACK,
@@ -1135,6 +1324,37 @@ int ts_claw_list_exit_nodes(ts_claw_peer_t *out, size_t capacity)
         return err < 0 ? (int)err : -(int)err;
     }
     return (int)count;
+}
+
+esp_err_t ts_claw_set_exit_node(uint32_t exit_node_ip,
+                                uint32_t timeout_ms,
+                                ts_claw_runtime_result_t *out)
+{
+    if (!s_ts.initialized || out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(out, 0, sizeof(*out));
+    ts_event_t event = {
+        .type = TS_EVENT_SET_EXIT_NODE,
+        .requested_exit_node_ip = exit_node_ip,
+        .timeout_ms = timeout_ms,
+        .runtime_result = out,
+    };
+    return send_sync_event(&event);
+}
+
+esp_err_t ts_claw_reconnect(uint32_t timeout_ms)
+{
+    if (!s_ts.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ts_event_t event = {
+        .type = TS_EVENT_RECONNECT,
+        .timeout_ms = timeout_ms,
+    };
+    return send_sync_event(&event);
 }
 
 esp_err_t ts_claw_factory_reset(void)

@@ -67,6 +67,14 @@ typedef struct {
     char derp_region_name[TS_CLAW_REGION_NAME_LEN];
 } ts_claw_peer_t;
 
+typedef struct {
+    uint32_t selected_exit_node_ip;
+    ts_exit_state_t exit_state;
+    char egress[16];
+    bool rollback_attempted;
+    bool rollback_recovered;
+} ts_claw_runtime_result_t;
+
 esp_err_t ts_claw_init(const ts_claw_config_t *config);
 /*
  * sta_netif is a borrowed application-lifetime object. It must remain valid
@@ -79,6 +87,11 @@ esp_err_t ts_claw_get_status(ts_claw_status_t *out_status);
 esp_err_t ts_claw_get_diagnostics(ts_claw_diagnostics_t *out);
 /* Returns the number of copied exit nodes, or a negative error value. */
 int ts_claw_list_exit_nodes(ts_claw_peer_t *out, size_t capacity);
+/* timeout_ms == 0 performs one immediate observation before timing out. */
+esp_err_t ts_claw_set_exit_node(uint32_t exit_node_ip,
+                                uint32_t timeout_ms,
+                                ts_claw_runtime_result_t *out);
+esp_err_t ts_claw_reconnect(uint32_t timeout_ms);
 /* Stops the runtime, erases its identity, and keeps it stopped until reboot. */
 esp_err_t ts_claw_factory_reset(void);
 
