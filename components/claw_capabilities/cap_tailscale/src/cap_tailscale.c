@@ -107,10 +107,10 @@ static esp_err_t cap_tailscale_require_confirmation(const cJSON *root,
                                                                   cJSON_IsTrue(confirmed),
                                                                   unexpected_field_count);
 
-    if (err == ESP_ERR_INVALID_STATE) {
-        return err;
+    if (unexpected_field_count != 0) {
+        return ESP_ERR_INVALID_ARG;
     }
-    return unexpected_field_count == 0 ? ESP_ERR_INVALID_STATE : err;
+    return err == ESP_OK ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 static esp_err_t cap_tailscale_read_status_execute(const char *input_json,
@@ -215,7 +215,7 @@ static esp_err_t cap_tailscale_parse_set_request(const char *input_json, char *s
         cJSON_Delete(root);
         return ESP_ERR_INVALID_ARG;
     }
-    err = cap_tailscale_normalize_selector(node->valuestring, selector, selector_size);
+    err = cap_tailscale_validate_selector(node->valuestring, selector, selector_size);
     cJSON_Delete(root);
     return err;
 }

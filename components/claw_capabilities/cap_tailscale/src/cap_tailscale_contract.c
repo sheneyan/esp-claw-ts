@@ -245,6 +245,53 @@ bool cap_tailscale_selector_is_cgnat(const char *selector)
     return octets[0] == 100U && octets[1] >= 64U && octets[1] <= 127U;
 }
 
+static bool cap_tailscale_selector_is_ipv4_like(const char *selector)
+{
+    const char *cursor = selector;
+    size_t segment;
+
+    /*
+     * Three leading decimal components are enough to classify an otherwise
+     * malformed value as an IPv4 selector rather than silently accepting it
+     * as a hostname.  Ordinary hostnames such as node.example remain outside
+     * this policy.
+     */
+    for (segment = 0; segment < 3; ++segment) {
+        const char *segment_start = cursor;
+
+        while (*cursor >= '0' && *cursor <= '9') {
+            ++cursor;
+        }
+        if (cursor == segment_start) {
+            return false;
+        }
+        if (segment < 2) {
+            if (*cursor != '.') {
+                return false;
+            }
+            ++cursor;
+        }
+    }
+    return true;
+}
+
+esp_err_t cap_tailscale_validate_selector(const char *selector,
+                                          char *out_selector,
+                                          size_t out_selector_size)
+{
+    esp_err_t err = cap_tailscale_normalize_selector(selector, out_selector, out_selector_size);
+
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (cap_tailscale_selector_is_ipv4_like(out_selector) &&
+        !cap_tailscale_selector_is_cgnat(out_selector)) {
+        out_selector[0] = '\0';
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
 size_t cap_tailscale_bound_exit_node_count(size_t count)
 {
     return count > CAP_TAILSCALE_MAX_EXIT_NODES ? CAP_TAILSCALE_MAX_EXIT_NODES : count;

@@ -15,3 +15,23 @@ target_include_directories(test_cap_tailscale_contract PRIVATE
 target_compile_options(test_cap_tailscale_contract PRIVATE -Wall -Wextra -Werror)
 
 add_test(NAME cap_tailscale_contract COMMAND test_cap_tailscale_contract)
+
+set(CAP_TAILSCALE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../..")
+set(CAP_TAILSCALE_CJSON_DIR
+    "${CAP_TAILSCALE_ROOT}/application/edge_agent/managed_components/espressif__cjson/cJSON")
+
+add_executable(test_cap_tailscale_handlers
+    test_cap_tailscale_handlers.c
+    ../../src/cap_tailscale.c
+    ../../src/cap_tailscale_contract.c
+    "${CAP_TAILSCALE_CJSON_DIR}/cJSON.c"
+)
+target_include_directories(test_cap_tailscale_handlers PRIVATE
+    stubs
+    "${CAP_TAILSCALE_CJSON_DIR}"
+    ../../include
+    ../../private_include
+)
+target_compile_options(test_cap_tailscale_handlers PRIVATE -Wall -Wextra -Werror)
+
+add_test(NAME cap_tailscale_handlers COMMAND test_cap_tailscale_handlers)

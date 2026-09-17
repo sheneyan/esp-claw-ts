@@ -212,6 +212,15 @@ static void test_selector_normalization_and_cgnat_range(void)
                                                  sizeof(hostname_selector)) == ESP_OK);
     TEST_CHECK(hostname_selector[CAP_TAILSCALE_HOSTNAME_LEN - 1] == '\0');
     TEST_CHECK(cap_tailscale_normalize_selector("100.64.0.1", selector, 1) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("  100.64.0.1  ", selector, sizeof(selector)) == ESP_OK);
+    TEST_CHECK(strcmp(selector, "100.64.0.1") == 0);
+    TEST_CHECK(cap_tailscale_validate_selector("192.168.1.1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("100.128.0.1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("100.064.0.1", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("100.64.0", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("100.64.0.1x", selector, sizeof(selector)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_validate_selector("node.example", selector, sizeof(selector)) == ESP_OK);
+    TEST_CHECK(strcmp(selector, "node.example") == 0);
 
     TEST_CHECK(cap_tailscale_selector_is_cgnat("100.64.0.1"));
     TEST_CHECK(cap_tailscale_selector_is_cgnat("100.127.255.254"));
@@ -268,13 +277,13 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     status.enabled = true;
     status.connected = true;
     snprintf(status.hostname, sizeof(status.hostname), "hostname-sentinel");
-    snprintf(status.vpn_ip, sizeof(status.vpn_ip), "100.64.0.1");
-    snprintf(status.path, sizeof(status.path), "derp");
+    snprintf(status.vpn_ip, sizeof(status.vpn_ip), "vpn-ip-sentinel");
+    snprintf(status.path, sizeof(status.path), "path-sentinel");
     status.peer_count = 17;
     status.peer_online = 8;
-    snprintf(status.exit_node, sizeof(status.exit_node), "100.64.0.2");
-    snprintf(status.exit_state, sizeof(status.exit_state), "active");
-    snprintf(status.egress, sizeof(status.egress), "exit_node");
+    snprintf(status.exit_node, sizeof(status.exit_node), "exit-sentinel");
+    snprintf(status.exit_state, sizeof(status.exit_state), "state-sentinel");
+    snprintf(status.egress, sizeof(status.egress), "egress-sentinel");
     snprintf(status.last_error, sizeof(status.last_error), "safe-error-sentinel");
     status.derp_active.id = 1;
     snprintf(status.derp_active.name, sizeof(status.derp_active.name), "active-derp-sentinel");
@@ -283,7 +292,12 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     status.derp_rtts[0].region.id = 3;
     snprintf(status.derp_rtts[0].region.name, sizeof(status.derp_rtts[0].region.name), "rtt-derp-sentinel");
     status.derp_rtts[0].rtt_ms = 42;
-    status.derp_rtt_count = 1;
+    status.derp_rtts[0].timed_out = false;
+    status.derp_rtts[1].region.id = 4;
+    snprintf(status.derp_rtts[1].region.name, sizeof(status.derp_rtts[1].region.name), "rtt-timeout-sentinel");
+    status.derp_rtts[1].rtt_ms = 77;
+    status.derp_rtts[1].timed_out = true;
+    status.derp_rtt_count = 2;
     status.derp_heartbeat_age_ms = 1234;
     status.control_rx_age_ms = 5678;
     status.reconnect_coord_watchdog = 1;
@@ -299,12 +313,32 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
 
     TEST_CHECK(cap_tailscale_render_status_json(&status, output, sizeof(output)) == ESP_OK);
     TEST_CHECK(strstr(output, "hostname-sentinel") != NULL);
-    TEST_CHECK(strstr(output, "100.64.0.1") != NULL);
+    TEST_CHECK(strstr(output, "vpn-ip-sentinel") != NULL);
+    TEST_CHECK(strstr(output, "\"enabled\":true") != NULL);
+    TEST_CHECK(strstr(output, "\"connected\":true") != NULL);
+    TEST_CHECK(strstr(output, "\"path\":\"path-sentinel\"") != NULL);
+    TEST_CHECK(strstr(output, "\"peer_count\":17") != NULL);
+    TEST_CHECK(strstr(output, "\"peer_online\":8") != NULL);
+    TEST_CHECK(strstr(output, "exit-sentinel") != NULL);
+    TEST_CHECK(strstr(output, "\"state\":\"state-sentinel\"") != NULL);
+    TEST_CHECK(strstr(output, "\"egress\":\"egress-sentinel\"") != NULL);
+    TEST_CHECK(strstr(output, "safe-error-sentinel") != NULL);
+    TEST_CHECK(strstr(output, "\"active\":{\"id\":1,\"name\":\"active-derp-sentinel\"}") != NULL);
+    TEST_CHECK(strstr(output, "\"default\":{\"id\":2,\"name\":\"default-derp-sentinel\"}") != NULL);
     TEST_CHECK(strstr(output, "active-derp-sentinel") != NULL);
     TEST_CHECK(strstr(output, "rtt-derp-sentinel") != NULL);
-    TEST_CHECK(strstr(output, "\"peer_count\":17") != NULL);
-    TEST_CHECK(strstr(output, "\"state\":\"active\"") != NULL);
-    TEST_CHECK(strstr(output, "\"egress\":\"exit_node\"") != NULL);
+    TEST_CHECK(strstr(output, "\"id\":3,\"name\":\"rtt-derp-sentinel\"") != NULL);
+    TEST_CHECK(strstr(output, "\"rtt_ms\":42") != NULL);
+    TEST_CHECK(strstr(output, "\"timed_out\":false") != NULL);
+    TEST_CHECK(strstr(output, "\"id\":4,\"name\":\"rtt-timeout-sentinel\"") != NULL);
+    TEST_CHECK(strstr(output, "\"rtt_ms\":77") != NULL);
+    TEST_CHECK(strstr(output, "\"timed_out\":true") != NULL);
+    TEST_CHECK(strstr(output, "\"derp_heartbeat_age_ms\":1234") != NULL);
+    TEST_CHECK(strstr(output, "\"control_rx_age_ms\":5678") != NULL);
+    TEST_CHECK(strstr(output, "\"coord_watchdog\":1") != NULL);
+    TEST_CHECK(strstr(output, "\"coord_transport\":2") != NULL);
+    TEST_CHECK(strstr(output, "\"derp_watchdog\":3") != NULL);
+    TEST_CHECK(strstr(output, "\"derp_retry\":4") != NULL);
     for (index = 0; index < sizeof(forbidden) / sizeof(forbidden[0]); ++index) {
         TEST_CHECK(strstr(output, forbidden[index]) == NULL);
     }

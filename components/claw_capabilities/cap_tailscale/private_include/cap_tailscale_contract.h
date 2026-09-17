@@ -45,6 +45,11 @@ esp_err_t cap_tailscale_normalize_selector(const char *selector,
 /** Return true only for a syntactically valid IPv4 address in 100.64.0.0/10. */
 bool cap_tailscale_selector_is_cgnat(const char *selector);
 
+/** Normalize a selector and reject IPv4-like values outside canonical CGNAT. */
+esp_err_t cap_tailscale_validate_selector(const char *selector,
+                                          char *out_selector,
+                                          size_t out_selector_size);
+
 /** Clamp returned provider counts to the public array capacities. */
 size_t cap_tailscale_bound_exit_node_count(size_t count);
 size_t cap_tailscale_bound_derp_rtt_count(size_t count);
