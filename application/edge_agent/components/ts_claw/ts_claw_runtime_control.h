@@ -63,6 +63,7 @@ typedef struct {
     bool configured;
     bool active;
     bool completion_ready;
+    bool reconnect_disconnect_seen;
 } ts_claw_runtime_control_t;
 
 void ts_claw_runtime_control_init(ts_claw_runtime_control_t *control,

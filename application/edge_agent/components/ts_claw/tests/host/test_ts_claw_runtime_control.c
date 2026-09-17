@@ -478,6 +478,21 @@ static void test_second_mutation_is_rejected_without_state_damage(void)
     TEST_CHECK(fake.desired_ip == TEST_NEW_IP);
 }
 
+static void test_set_resets_reconnect_generation_state(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+    control.reconnect_baseline_ctrl_rx = 999u;
+    control.reconnect_disconnect_seen = true;
+
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
+    TEST_CHECK(control.reconnect_baseline_ctrl_rx == 0u);
+    TEST_CHECK(!control.reconnect_disconnect_seen);
+}
+
 static void test_null_and_callback_error_boundaries(void)
 {
     fake_runtime_t fake;
@@ -511,9 +526,11 @@ static void test_reconnect_uses_rebind_and_preserves_desired_ip(void)
     fake.reconnect_connected_values[0] = true;
     fake.reconnect_token_values[0] = 100u;
     fake.reconnect_connected_values[1] = true;
-    fake.reconnect_token_values[1] = 100u;
-    fake.reconnect_connected_values[2] = true;
-    fake.reconnect_token_values[2] = 101u;
+    fake.reconnect_token_values[1] = 101u;
+    fake.reconnect_connected_values[2] = false;
+    fake.reconnect_token_values[2] = 102u;
+    fake.reconnect_connected_values[3] = true;
+    fake.reconnect_token_values[3] = 103u;
     ts_claw_runtime_control_init(&control, &s_ops, &fake);
 
     TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 100u, 10u) == ESP_OK);
@@ -522,8 +539,10 @@ static void test_reconnect_uses_rebind_and_preserves_desired_ip(void)
     TEST_CHECK(ts_claw_runtime_control_is_active(&control));
     TEST_CHECK(strcmp(fake.calls, "QRQ") == 0);
     ts_claw_runtime_control_advance(&control, 30u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 40u);
     (void)take_completion(&control, ESP_OK);
-    TEST_CHECK(strcmp(fake.calls, "QRQQ") == 0);
+    TEST_CHECK(strcmp(fake.calls, "QRQQQ") == 0);
     TEST_CHECK(fake.desired_ip == TEST_OLD_IP);
     TEST_CHECK(fake.destroy_count == 0u);
     TEST_CHECK(fake.start_count == 0u);
@@ -555,16 +574,64 @@ static void test_reconnect_zero_baseline_requires_nonzero_new_control_rx(void)
     ts_claw_runtime_control_t control;
     fake_init(&fake, TEST_OLD_IP);
     fake.reconnect_connected_values[0] = true;
-    fake.reconnect_connected_values[1] = true;
+    fake.reconnect_connected_values[1] = false;
     fake.reconnect_connected_values[2] = true;
-    fake.reconnect_token_values[2] = 1u;
+    fake.reconnect_connected_values[3] = true;
+    fake.reconnect_token_values[3] = 1u;
     ts_claw_runtime_control_init(&control, &s_ops, &fake);
 
     TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 100u, 0u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, 1u);
     TEST_CHECK(ts_claw_runtime_control_is_active(&control));
     ts_claw_runtime_control_advance(&control, 2u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 3u);
     (void)take_completion(&control, ESP_OK);
+}
+
+static void test_reconnect_disconnect_without_new_control_rx_stays_pending(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.reconnect_connected_values[0] = true;
+    fake.reconnect_token_values[0] = 400u;
+    fake.reconnect_connected_values[1] = false;
+    fake.reconnect_token_values[1] = 401u;
+    fake.reconnect_connected_values[2] = true;
+    fake.reconnect_token_values[2] = 400u;
+    fake.reconnect_connected_values[3] = true;
+    fake.reconnect_token_values[3] = 0u;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 10u, 0u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 1u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 2u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 3u);
+    TEST_CHECK(ts_claw_runtime_control_is_active(&control));
+    ts_claw_runtime_control_advance(&control, 10u);
+    (void)take_completion(&control, ESP_ERR_TIMEOUT);
+}
+
+static void test_reconnect_timeout_zero_observes_once_after_rebind(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.reconnect_connected_values[0] = true;
+    fake.reconnect_token_values[0] = 500u;
+    fake.reconnect_connected_values[1] = true;
+    fake.reconnect_token_values[1] = 501u;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 0u, 100u) == ESP_OK);
+    ts_claw_runtime_control_advance(&control, 100u);
+    (void)take_completion(&control, ESP_ERR_TIMEOUT);
+    TEST_CHECK(fake.reconnect_count == 2u);
+    TEST_CHECK(!control.reconnect_disconnect_seen);
+    TEST_CHECK(control.reconnect_baseline_ctrl_rx == 0u);
 }
 
 static void test_reconnect_failures_and_timeout(void)
@@ -582,9 +649,9 @@ static void test_reconnect_failures_and_timeout(void)
     fake.reconnect_connected_values[0] = true;
     fake.reconnect_token_values[0] = 300u;
     fake.reconnect_connected_values[1] = true;
-    fake.reconnect_token_values[1] = 300u;
+    fake.reconnect_token_values[1] = 301u;
     fake.reconnect_connected_values[2] = true;
-    fake.reconnect_token_values[2] = 301u;
+    fake.reconnect_token_values[2] = 302u;
     ts_claw_runtime_control_init(&control, &s_ops, &fake);
     TEST_CHECK(ts_claw_runtime_control_begin_reconnect(&control, 10u, 100u) == ESP_OK);
     ts_claw_runtime_control_advance(&control, 109u);
@@ -614,10 +681,13 @@ int main(void)
     test_positive_deadline_precedes_late_exit_success();
     test_timeout_zero_observes_once_then_rolls_back();
     test_second_mutation_is_rejected_without_state_damage();
+    test_set_resets_reconnect_generation_state();
     test_null_and_callback_error_boundaries();
     test_reconnect_uses_rebind_and_preserves_desired_ip();
     test_reconnect_disconnected_then_new_control_rx_succeeds();
     test_reconnect_zero_baseline_requires_nonzero_new_control_rx();
+    test_reconnect_disconnect_without_new_control_rx_stays_pending();
+    test_reconnect_timeout_zero_observes_once_after_rebind();
     test_reconnect_failures_and_timeout();
 
     puts("ts_claw_runtime_control: all tests passed");

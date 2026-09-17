@@ -30,6 +30,8 @@ static void runtime_finish(ts_claw_runtime_control_t *control,
     control->phase = TS_CLAW_RUNTIME_IDLE;
     control->active = false;
     control->completion_ready = true;
+    control->reconnect_baseline_ctrl_rx = 0u;
+    control->reconnect_disconnect_seen = false;
 }
 
 static void runtime_start_rollback(ts_claw_runtime_control_t *control,
@@ -101,6 +103,8 @@ esp_err_t ts_claw_runtime_control_begin_set(ts_claw_runtime_control_t *control,
     control->old_desired_ip = old_desired_ip;
     control->current_desired_ip = old_desired_ip;
     control->operation_error = ESP_OK;
+    control->reconnect_baseline_ctrl_rx = 0u;
+    control->reconnect_disconnect_seen = false;
     memset(&control->completion, 0, sizeof(control->completion));
 
     esp_err_t error = control->ops->retire_probe(control->ops_ctx);
@@ -144,6 +148,8 @@ esp_err_t ts_claw_runtime_control_begin_reconnect(ts_claw_runtime_control_t *con
     control->started_ms = current_ms;
     control->timeout_ms = timeout_ms;
     control->operation_error = ESP_OK;
+    control->reconnect_baseline_ctrl_rx = 0u;
+    control->reconnect_disconnect_seen = false;
     memset(&control->completion, 0, sizeof(control->completion));
 
     bool connected = false;
@@ -271,8 +277,12 @@ static void runtime_observe_reconnect(ts_claw_runtime_control_t *control,
         runtime_finish(control, error, false, false);
         return;
     }
+    if (!connected) {
+        control->reconnect_disconnect_seen = true;
+    }
     /* A still-connected pre-rebind session is not proof of reconnection. */
-    if (connected && control_rx_token != 0u &&
+    if (control->reconnect_disconnect_seen && connected &&
+        control_rx_token != 0u &&
         control_rx_token > control->reconnect_baseline_ctrl_rx) {
         runtime_finish(control, ESP_OK, false, false);
         return;

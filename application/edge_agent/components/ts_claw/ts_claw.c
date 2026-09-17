@@ -492,6 +492,11 @@ static esp_err_t runtime_observe_reconnect_status(void *ctx,
     if (s_ts.ml == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+    /*
+     * FORCE_RECONNECT changes MicroLink to RECONNECTING before its minimum
+     * one-second retry backoff. The 250 ms worker tick is expected to observe
+     * that real state transition; cached TS-Claw connection state is not used.
+     */
     *connected = microlink_is_connected(s_ts.ml);
     *control_rx_token = microlink_get_ctrl_last_rx_ms(s_ts.ml);
     return ESP_OK;
