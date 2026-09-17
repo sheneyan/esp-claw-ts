@@ -31,7 +31,16 @@ enum {
     TS_CLAW_EXIT_PROBE_INTERVAL_MS = 5000,
     TS_CLAW_EXIT_PROBE_TIMEOUT_MS = 5000,
     TS_CLAW_EXIT_PROBE_DATA_SIZE = 16,
+    TS_CLAW_EXIT_PROBE_QUIESCE_MS = 7000,
+    TS_CLAW_EXIT_PROBE_CLEANUP_MS = 1000,
+    TS_CLAW_DESTROY_RETRY_MS = 1000,
 };
+
+typedef enum {
+    TS_DESTROY_RETRY_NONE,
+    TS_DESTROY_RETRY_STOP,
+    TS_DESTROY_RETRY_RESTART,
+} ts_destroy_retry_mode_t;
 
 typedef enum {
     TS_EVENT_WIFI_CHANGED,
@@ -58,8 +67,15 @@ typedef struct {
     TaskHandle_t worker;
     microlink_t *ml;
     esp_ping_handle_t exit_ping;
+    SemaphoreHandle_t exit_ping_end;
+    struct netif *exit_ping_wg_netif;
     uint32_t exit_ping_target;
-    uint64_t exit_ping_next_attempt_ms;
+    uint64_t exit_ping_recreate_after_ms;
+    bool exit_ping_accept_results;
+    bool exit_ping_stop_requested;
+    bool exit_ping_quiesced;
+    ts_destroy_retry_mode_t destroy_retry_mode;
+    uint64_t destroy_retry_ms;
     ts_resource_guard_t resource_guard;
     ts_exit_policy_t exit_policy;
     uint64_t next_resource_sample_ms;
@@ -118,10 +134,17 @@ static void set_exit_usable(bool usable)
     xSemaphoreGive(s_ts.lock);
 }
 
+static void set_exit_probe_accept_results(bool accept)
+{
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    s_ts.exit_ping_accept_results = accept;
+    xSemaphoreGive(s_ts.lock);
+}
+
 static void record_exit_probe(esp_ping_handle_t handle, bool success)
 {
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    if (handle != s_ts.exit_ping) {
+    if (handle != s_ts.exit_ping || !s_ts.exit_ping_accept_results) {
         xSemaphoreGive(s_ts.lock);
         return;
     }
@@ -146,23 +169,81 @@ static void exit_probe_on_timeout(esp_ping_handle_t handle, void *args)
 
 static void exit_probe_on_end(esp_ping_handle_t handle, void *args)
 {
-    (void)handle;
     (void)args;
+
+    bool notify = false;
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    if (handle == s_ts.exit_ping && s_ts.exit_ping_stop_requested) {
+        s_ts.exit_ping_quiesced = true;
+        notify = true;
+    }
+    xSemaphoreGive(s_ts.lock);
+    if (notify) {
+        xSemaphoreGive(s_ts.exit_ping_end);
+    }
 }
 
-static void worker_stop_exit_probe(void)
+static esp_err_t worker_retire_exit_probe(void)
 {
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     esp_ping_handle_t ping = s_ts.exit_ping;
-    s_ts.exit_ping = NULL;
-    s_ts.exit_ping_target = 0u;
-    s_ts.exit_ping_next_attempt_ms = 0u;
+    s_ts.exit_ping_accept_results = false;
+    bool stop_requested = s_ts.exit_ping_stop_requested;
+    bool quiesced = s_ts.exit_ping_quiesced;
+    if (ping != NULL && !stop_requested) {
+        s_ts.exit_ping_stop_requested = true;
+    }
     xSemaphoreGive(s_ts.lock);
 
-    if (ping != NULL) {
-        (void)esp_ping_stop(ping);
-        (void)esp_ping_delete_session(ping);
+    if (ping == NULL) {
+        return ESP_OK;
     }
+
+    if (!stop_requested) {
+        (void)xSemaphoreTake(s_ts.exit_ping_end, 0);
+        esp_err_t err = esp_ping_stop(ping);
+        if (err != ESP_OK) {
+            xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+            if (s_ts.exit_ping == ping) {
+                s_ts.exit_ping_stop_requested = false;
+            }
+            xSemaphoreGive(s_ts.lock);
+            set_last_error("exit probe stop failed");
+            return err;
+        }
+    }
+
+    if (!quiesced &&
+        xSemaphoreTake(s_ts.exit_ping_end,
+                       pdMS_TO_TICKS(TS_CLAW_EXIT_PROBE_QUIESCE_MS)) != pdTRUE) {
+        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+        quiesced = s_ts.exit_ping == ping && s_ts.exit_ping_quiesced;
+        xSemaphoreGive(s_ts.lock);
+        if (!quiesced) {
+            set_last_error("exit probe quiesce timed out");
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+
+    esp_err_t err = esp_ping_delete_session(ping);
+    if (err != ESP_OK) {
+        set_last_error("exit probe delete failed");
+        return err;
+    }
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    if (s_ts.exit_ping == ping) {
+        s_ts.exit_ping = NULL;
+        s_ts.exit_ping_wg_netif = NULL;
+        s_ts.exit_ping_target = 0u;
+        s_ts.exit_ping_accept_results = false;
+        s_ts.exit_ping_stop_requested = false;
+        s_ts.exit_ping_quiesced = false;
+        s_ts.exit_ping_recreate_after_ms =
+            now_ms() + TS_CLAW_EXIT_PROBE_CLEANUP_MS;
+    }
+    xSemaphoreGive(s_ts.lock);
+    return ESP_OK;
 }
 
 static void set_disconnected_status(void)
@@ -224,17 +305,21 @@ static void microlink_state_changed(microlink_t *ml,
     }
 }
 
-static void worker_destroy_microlink(void)
+static esp_err_t worker_destroy_microlink(void)
 {
     if (s_ts.ml == NULL) {
-        return;
+        return ESP_OK;
     }
 
     microlink_t *ml = s_ts.ml;
     ts_claw_route_hook_set_netifs(worker_lwip_netif_snapshot(), NULL);
-    worker_stop_exit_probe();
+    set_exit_probe_accept_results(false);
     set_exit_usable(false);
     ts_claw_route_hook_set_tunnel_available(false);
+    esp_err_t retire_err = worker_retire_exit_probe();
+    if (retire_err != ESP_OK) {
+        return retire_err;
+    }
     (void)microlink_pin_wg_output_netif(ml, NULL);
     esp_err_t err = microlink_stop(ml);
     if (err != ESP_OK) {
@@ -248,6 +333,7 @@ static void worker_destroy_microlink(void)
     s_ts.error_since_ms = 0u;
     ts_claw_route_hook_reset();
     set_disconnected_status();
+    return ESP_OK;
 }
 
 static esp_err_t worker_start_microlink(void)
@@ -282,7 +368,7 @@ static esp_err_t worker_start_microlink(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         set_last_error("wireguard upstream preset failed");
         ESP_LOGE(TAG, "microlink upstream preset failed: %s", esp_err_to_name(err));
-        worker_destroy_microlink();
+        (void)worker_destroy_microlink();
         return err;
     }
 
@@ -291,7 +377,7 @@ static esp_err_t worker_start_microlink(void)
     if (err != ESP_OK) {
         set_last_error("microlink start failed");
         ESP_LOGE(TAG, "microlink_start failed: %s", esp_err_to_name(err));
-        worker_destroy_microlink();
+        (void)worker_destroy_microlink();
         return err;
     }
 
@@ -327,21 +413,38 @@ static esp_err_t worker_start_with_retry(uint64_t current_ms)
     return err;
 }
 
-static void worker_restart_microlink(void)
+static void worker_schedule_destroy_retry(ts_destroy_retry_mode_t mode,
+                                          uint64_t current_ms)
 {
-    worker_destroy_microlink();
+    if (mode == TS_DESTROY_RETRY_STOP ||
+        s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE) {
+        s_ts.destroy_retry_mode = mode;
+    }
+    s_ts.destroy_retry_ms = current_ms + TS_CLAW_DESTROY_RETRY_MS;
+}
+
+static esp_err_t worker_restart_microlink(void)
+{
+    esp_err_t err = worker_destroy_microlink();
+    if (err != ESP_OK) {
+        worker_schedule_destroy_retry(TS_DESTROY_RETRY_RESTART, now_ms());
+        return err;
+    }
+    s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
+    s_ts.destroy_retry_ms = 0u;
     if (worker_start_is_allowed()) {
-        (void)worker_start_with_retry(now_ms());
+        return worker_start_with_retry(now_ms());
     } else {
         s_ts.next_start_retry_ms = 0u;
     }
+    return ESP_OK;
 }
 
 static void worker_handle_wifi_changed(bool has_ip, esp_netif_t *sta_netif)
 {
     if (!has_ip) {
         ts_claw_route_hook_set_netifs(NULL, NULL);
-        worker_stop_exit_probe();
+        set_exit_probe_accept_results(false);
         set_exit_usable(false);
         if (s_ts.ml != NULL) {
             (void)microlink_pin_wg_output_netif(s_ts.ml, NULL);
@@ -430,6 +533,27 @@ static void worker_try_start_retry(uint64_t current_ms)
     (void)worker_start_with_retry(current_ms);
 }
 
+static void worker_try_destroy_retry(uint64_t current_ms)
+{
+    if (s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE ||
+        current_ms < s_ts.destroy_retry_ms) {
+        return;
+    }
+
+    const ts_destroy_retry_mode_t mode = s_ts.destroy_retry_mode;
+    esp_err_t err = worker_destroy_microlink();
+    if (err != ESP_OK) {
+        s_ts.destroy_retry_ms = now_ms() + TS_CLAW_DESTROY_RETRY_MS;
+        return;
+    }
+
+    s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
+    s_ts.destroy_retry_ms = 0u;
+    if (mode == TS_DESTROY_RETRY_RESTART && worker_start_is_allowed()) {
+        (void)worker_start_with_retry(now_ms());
+    }
+}
+
 static void worker_try_pin_upstream(uint64_t current_ms)
 {
     if (s_ts.ml == NULL || !worker_wifi_snapshot(NULL) || s_ts.upstream_pinned ||
@@ -499,24 +623,7 @@ static void worker_refresh_status(void)
     xSemaphoreGive(s_ts.lock);
 }
 
-static bool worker_selected_exit_online(void)
-{
-    if (s_ts.ml == NULL || s_ts.config.exit_node_ip == 0u) {
-        return false;
-    }
-
-    const int peers = microlink_get_peer_count(s_ts.ml);
-    for (int i = 0; i < peers; ++i) {
-        microlink_peer_info_t peer = {0};
-        if (microlink_get_peer_info(s_ts.ml, i, &peer) == ESP_OK &&
-            peer.vpn_ip == s_ts.config.exit_node_ip) {
-            return peer.online;
-        }
-    }
-    return false;
-}
-
-static esp_err_t worker_start_exit_probe(struct netif *wg_netif, uint64_t current_ms)
+static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
 {
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
     config.count = ESP_PING_COUNT_INFINITE;
@@ -539,8 +646,11 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif, uint64_t curren
     if (err == ESP_OK) {
         xSemaphoreTake(s_ts.lock, portMAX_DELAY);
         s_ts.exit_ping = ping;
+        s_ts.exit_ping_wg_netif = wg_netif;
         s_ts.exit_ping_target = s_ts.config.exit_node_ip;
-        s_ts.exit_ping_next_attempt_ms = 0u;
+        s_ts.exit_ping_accept_results = false;
+        s_ts.exit_ping_stop_requested = false;
+        s_ts.exit_ping_quiesced = false;
         xSemaphoreGive(s_ts.lock);
         err = esp_ping_start(ping);
     }
@@ -549,12 +659,17 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif, uint64_t curren
             xSemaphoreTake(s_ts.lock, portMAX_DELAY);
             if (s_ts.exit_ping == ping) {
                 s_ts.exit_ping = NULL;
+                s_ts.exit_ping_wg_netif = NULL;
                 s_ts.exit_ping_target = 0u;
+                s_ts.exit_ping_accept_results = false;
+                s_ts.exit_ping_stop_requested = false;
+                s_ts.exit_ping_quiesced = false;
             }
             xSemaphoreGive(s_ts.lock);
             (void)esp_ping_delete_session(ping);
         }
-        s_ts.exit_ping_next_attempt_ms = current_ms + TS_CLAW_EXIT_PROBE_INTERVAL_MS;
+        s_ts.exit_ping_recreate_after_ms =
+            now_ms() + TS_CLAW_EXIT_PROBE_CLEANUP_MS;
         set_last_error("exit probe start failed");
         return err;
     }
@@ -571,28 +686,43 @@ static void worker_manage_exit_probe(uint64_t current_ms)
     ts_claw_route_hook_set_netifs(sta_netif, wg_netif);
     ts_claw_route_hook_set_tunnel_available(tunnel_available);
 
-    const bool ready = s_ts.config.exit_node_ip != 0u && tunnel_available &&
-                       s_ts.upstream_pinned && worker_selected_exit_online();
+    const bool ready = s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE &&
+                       s_ts.config.exit_node_ip != 0u && tunnel_available &&
+                       s_ts.upstream_pinned &&
+                       microlink_selected_exit_ready(s_ts.ml);
     if (!ready) {
-        worker_stop_exit_probe();
+        set_exit_probe_accept_results(false);
+        set_exit_usable(false);
+        return;
+    }
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    esp_ping_handle_t ping = s_ts.exit_ping;
+    const uint32_t ping_target = s_ts.exit_ping_target;
+    struct netif *ping_wg_netif = s_ts.exit_ping_wg_netif;
+    const bool stop_requested = s_ts.exit_ping_stop_requested;
+    xSemaphoreGive(s_ts.lock);
+
+    if (ping != NULL && (ping_target != s_ts.config.exit_node_ip ||
+                         ping_wg_netif != wg_netif || stop_requested)) {
+        set_exit_probe_accept_results(false);
+        set_exit_usable(false);
+        if (worker_retire_exit_probe() != ESP_OK) {
+            return;
+        }
+        ping = NULL;
+    }
+    if (ping == NULL && current_ms < s_ts.exit_ping_recreate_after_ms) {
+        set_exit_usable(false);
+        return;
+    }
+    if (ping == NULL && worker_start_exit_probe(wg_netif) != ESP_OK) {
         set_exit_usable(false);
         return;
     }
 
     set_exit_usable(true);
-    if (s_ts.exit_ping != NULL &&
-        s_ts.exit_ping_target == s_ts.config.exit_node_ip) {
-        return;
-    }
-    if (s_ts.exit_ping != NULL) {
-        worker_stop_exit_probe();
-    }
-    if (current_ms < s_ts.exit_ping_next_attempt_ms) {
-        return;
-    }
-    if (worker_start_exit_probe(wg_netif, current_ms) != ESP_OK) {
-        set_exit_usable(false);
-    }
+    set_exit_probe_accept_results(true);
 }
 
 static void worker_check_error(uint64_t current_ms)
@@ -641,10 +771,17 @@ static void worker_sample_resources(uint64_t current_ms)
         &s_ts.resource_guard, current_ms, internal_free, internal_largest);
     if (action == TS_RESOURCE_GUARD_STOP) {
         s_ts.next_start_retry_ms = 0u;
-        worker_destroy_microlink();
-        set_last_error("resource guard stopped tailscale");
+        esp_err_t err = worker_destroy_microlink();
+        if (err != ESP_OK) {
+            worker_schedule_destroy_retry(TS_DESTROY_RETRY_STOP, now_ms());
+        } else {
+            s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
+            s_ts.destroy_retry_ms = 0u;
+            set_last_error("resource guard stopped tailscale");
+        }
     } else if (action == TS_RESOURCE_GUARD_RETRY) {
-        const bool started = worker_wifi_snapshot(NULL) &&
+        const bool started = s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE &&
+                             s_ts.ml == NULL && worker_wifi_snapshot(NULL) &&
                              worker_start_microlink() == ESP_OK;
         ts_resource_guard_retry_completed(&s_ts.resource_guard, current_ms, started);
     }
@@ -688,7 +825,13 @@ static void worker_handle_event(const ts_event_t *event)
         break;
     case TS_EVENT_FACTORY_RESET:
         s_ts.next_start_retry_ms = 0u;
-        worker_destroy_microlink();
+        result = worker_destroy_microlink();
+        if (result != ESP_OK) {
+            worker_schedule_destroy_retry(TS_DESTROY_RETRY_STOP, now_ms());
+            break;
+        }
+        s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
+        s_ts.destroy_retry_ms = 0u;
         result = microlink_factory_reset();
         if (result == ESP_OK && s_ts.config.enabled && worker_wifi_snapshot(NULL) &&
             !s_ts.resource_guard.stopped) {
@@ -720,6 +863,7 @@ static void ts_claw_worker(void *arg)
         worker_consume_pending_wifi();
 
         const uint64_t current_ms = now_ms();
+        worker_try_destroy_retry(current_ms);
         worker_try_start_retry(current_ms);
         worker_try_pin_upstream(current_ms);
         worker_manage_exit_probe(current_ms);
@@ -752,8 +896,15 @@ esp_err_t ts_claw_init(const ts_claw_config_t *config)
         memset(&s_ts, 0, sizeof(s_ts));
         return ESP_ERR_NO_MEM;
     }
+    s_ts.exit_ping_end = xSemaphoreCreateBinary();
+    if (s_ts.exit_ping_end == NULL) {
+        vSemaphoreDelete(s_ts.lock);
+        memset(&s_ts, 0, sizeof(s_ts));
+        return ESP_ERR_NO_MEM;
+    }
     s_ts.queue = xQueueCreate(TS_CLAW_QUEUE_DEPTH, sizeof(ts_event_t));
     if (s_ts.queue == NULL) {
+        vSemaphoreDelete(s_ts.exit_ping_end);
         vSemaphoreDelete(s_ts.lock);
         memset(&s_ts, 0, sizeof(s_ts));
         return ESP_ERR_NO_MEM;
@@ -771,6 +922,7 @@ esp_err_t ts_claw_init(const ts_claw_config_t *config)
                                      NULL, TS_CLAW_WORKER_PRIORITY, &s_ts.worker);
     if (created != pdPASS) {
         vQueueDelete(s_ts.queue);
+        vSemaphoreDelete(s_ts.exit_ping_end);
         vSemaphoreDelete(s_ts.lock);
         memset(&s_ts, 0, sizeof(s_ts));
         return ESP_ERR_NO_MEM;

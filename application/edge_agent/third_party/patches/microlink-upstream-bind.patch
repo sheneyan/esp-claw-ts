@@ -1,7 +1,7 @@
 diff --git a/include/microlink.h b/include/microlink.h
 --- a/include/microlink.h
 +++ b/include/microlink.h
-@@ -231,0 +232,8 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream);
+@@ -231,0 +232,17 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream);
 +/**
 + * @brief Borrow the current WireGuard lwIP netif.
 + *
@@ -10,6 +10,29 @@ diff --git a/include/microlink.h b/include/microlink.h
 + */
 +struct netif *microlink_get_wg_netif(const microlink_t *ml);
 +
++/**
++ * @brief Return whether the configured exit node is safe to probe/use.
++ *
++ * The WG manager publishes true only after the selected peer is active,
++ * online, advertises exit-node capability, has a WireGuard peer, and has
++ * successfully attached its 0.0.0.0/0 allowed-IP route.
++ */
++bool microlink_selected_exit_ready(const microlink_t *ml);
++
+diff --git a/include/microlink_internal.h b/include/microlink_internal.h
+--- a/include/microlink_internal.h
++++ b/include/microlink_internal.h
+@@ -375,0 +376 @@ typedef struct {
++    bool exit_route_attached;   /* Selected peer has WG 0.0.0.0/0 attached. */
+@@ -549,0 +551 @@ struct microlink_s {
++    bool selected_exit_ready;   /* Atomic snapshot published by wg_mgr. */
+@@ -562,0 +565,6 @@ struct microlink_s {
++
++    /* Immutable public view; wg_mgr publishes under this short-held lock. */
++    SemaphoreHandle_t peer_snapshot_lock;
++    microlink_peer_info_t peer_snapshot[ML_MAX_PEERS];
++    int peer_snapshot_count;
++    int peer_snapshot_online;
 diff --git a/src/microlink.c b/src/microlink.c
 --- a/src/microlink.c
 +++ b/src/microlink.c
@@ -53,6 +76,70 @@ diff --git a/src/microlink.c b/src/microlink.c
 +    if (err != ESP_OK) return err;
 +
 +    ESP_LOGI(TAG, "Factory reset complete");
+@@ -180,0 +182,7 @@ microlink_t *microlink_init(const microlink_config_t *config) {
++
++    ml->peer_snapshot_lock = xSemaphoreCreateMutex();
++    if (!ml->peer_snapshot_lock) {
++        ESP_LOGE(TAG, "Failed to create peer snapshot lock");
++        free(ml);
++        return NULL;
++    }
+@@ -340,0 +350 @@ microlink_t *microlink_init(const microlink_config_t *config) {
++        vSemaphoreDelete(ml->peer_snapshot_lock);
+@@ -642,0 +653,2 @@ void microlink_destroy(microlink_t *ml) {
++
++    if (ml->peer_snapshot_lock) vSemaphoreDelete(ml->peer_snapshot_lock);
+@@ -699,2 +712,6 @@ int microlink_get_peer_count(const microlink_t *ml) {
+-    return ml ? ml->peer_count : 0;
++    if (!ml || !ml->peer_snapshot_lock) return 0;
++    xSemaphoreTake(ml->peer_snapshot_lock, portMAX_DELAY);
++    int count = ml->peer_snapshot_count;
++    xSemaphoreGive(ml->peer_snapshot_lock);
++    return count;
+ }
+@@ -720,23 +735,12 @@ esp_err_t microlink_get_peer_info(const microlink_t *ml, int index, microlink_pe
+-    if (!ml || !info || index < 0 || index >= ml->peer_count) {
++    if (!ml || !info || !ml->peer_snapshot_lock || index < 0) {
+         return ESP_ERR_INVALID_ARG;
+     }
+-    const ml_peer_t *p = &ml->peers[index];
+-    info->vpn_ip = p->vpn_ip;
+-    strncpy(info->hostname, p->hostname, sizeof(info->hostname) - 1);
+-    memcpy(info->public_key, p->public_key, 32);
+-    /* Report Tailscale netmap liveness rather than the microlink slot-active
+-     * flag — `p->active` only means "the peer occupies a slot", not that the
+-     * remote device is currently reachable on the tailnet. */
+-    info->online = p->online && p->active;
+-    info->direct_path = p->has_direct_path;
+-    info->is_exit_node = p->is_exit_node;
+-    info->derp_region = p->derp_region;
+-    info->subnet_route_count = p->subnet_route_count;
+-    if (info->subnet_route_count > MICROLINK_MAX_PEER_ROUTES) {
+-        info->subnet_route_count = MICROLINK_MAX_PEER_ROUTES;
+-    }
+-    for (int r = 0; r < info->subnet_route_count; r++) {
+-        info->subnet_routes[r] = p->subnet_routes[r];
++    xSemaphoreTake(ml->peer_snapshot_lock, portMAX_DELAY);
++    if (index >= ml->peer_snapshot_count) {
++        xSemaphoreGive(ml->peer_snapshot_lock);
++        return ESP_ERR_INVALID_ARG;
+     }
++    *info = ml->peer_snapshot[index];
++    xSemaphoreGive(ml->peer_snapshot_lock);
+     return ESP_OK;
+ }
+@@ -753,6 +757,6 @@ esp_err_t microlink_get_diag(const microlink_t *ml, microlink_diag_t *out) {
+-    out->peer_count = ml->peer_count;
+-    int online = 0;
+-    for (int i = 0; i < ml->peer_count; i++) {
+-        if (ml->peers[i].active && ml->peers[i].online) online++;
++    if (ml->peer_snapshot_lock) {
++        xSemaphoreTake(ml->peer_snapshot_lock, portMAX_DELAY);
++        out->peer_count = ml->peer_snapshot_count;
++        out->peer_online = ml->peer_snapshot_online;
++        xSemaphoreGive(ml->peer_snapshot_lock);
+     }
+-    out->peer_online = online;
 diff --git a/src/ml_stun.c b/src/ml_stun.c
 --- a/src/ml_stun.c
 +++ b/src/ml_stun.c
@@ -130,19 +217,134 @@ diff --git a/src/ml_wg_mgr.c b/src/ml_wg_mgr.c
 @@ -230 +230 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
 -    if (ml) ml->upstream_netif = (void *)upstream;
 +    if (ml) __atomic_store_n(&ml->upstream_netif, (void *)upstream, __ATOMIC_RELEASE);
-@@ -234,0 +235,5 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
+@@ -234,0 +235,62 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
 +struct netif *microlink_get_wg_netif(const microlink_t *ml)
 +{
 +    return ml ? (struct netif *)__atomic_load_n(&ml->wg_netif, __ATOMIC_ACQUIRE) : NULL;
 +}
 +
-@@ -445 +451 @@ static void wg_mgr_task(void *arg) {
++bool microlink_selected_exit_ready(const microlink_t *ml)
++{
++    return ml && __atomic_load_n(&ml->selected_exit_ready, __ATOMIC_ACQUIRE);
++}
++
++static void publish_selected_exit_ready(microlink_t *ml)
++{
++    bool ready = false;
++
++    if (ml->config.exit_node_ip != 0) {
++        for (int i = 0; i < ml->peer_count; ++i) {
++            const ml_peer_t *peer = &ml->peers[i];
++            if (peer->active && peer->vpn_ip == ml->config.exit_node_ip &&
++                peer->online && peer->is_exit_node && peer->wg_peer_index >= 0 &&
++                peer->exit_route_attached) {
++                ready = true;
++                break;
++            }
++        }
++    }
++
++    __atomic_store_n(&ml->selected_exit_ready, ready, __ATOMIC_RELEASE);
++}
++
++static void publish_peer_snapshot(microlink_t *ml)
++{
++    if (!ml->peer_snapshot_lock) return;
++
++    xSemaphoreTake(ml->peer_snapshot_lock, portMAX_DELAY);
++    int count = ml->peer_count;
++    if (count > ML_MAX_PEERS) count = ML_MAX_PEERS;
++    int online = 0;
++    for (int i = 0; i < count; ++i) {
++        const ml_peer_t *peer = &ml->peers[i];
++        microlink_peer_info_t *info = &ml->peer_snapshot[i];
++        memset(info, 0, sizeof(*info));
++        info->vpn_ip = peer->vpn_ip;
++        strlcpy(info->hostname, peer->hostname, sizeof(info->hostname));
++        memcpy(info->public_key, peer->public_key, sizeof(info->public_key));
++        info->online = peer->active && peer->online;
++        info->direct_path = peer->has_direct_path;
++        info->is_exit_node = peer->is_exit_node;
++        info->derp_region = peer->derp_region;
++        info->subnet_route_count = peer->subnet_route_count;
++        if (info->subnet_route_count > MICROLINK_MAX_PEER_ROUTES) {
++            info->subnet_route_count = MICROLINK_MAX_PEER_ROUTES;
++        }
++        for (int r = 0; r < info->subnet_route_count; ++r) {
++            info->subnet_routes[r] = peer->subnet_routes[r];
++        }
++        if (info->online) ++online;
++    }
++    ml->peer_snapshot_count = count;
++    ml->peer_snapshot_online = online;
++    xSemaphoreGive(ml->peer_snapshot_lock);
++}
++
+@@ -445 +475 @@ static void wg_mgr_task(void *arg) {
 -    ml->wg_netif = netif;
 +    __atomic_store_n(&ml->wg_netif, (void *)netif, __ATOMIC_RELEASE);
-@@ -2352,3 +2358,3 @@ static void wg_mgr_task(void *arg) {
+@@ -595 +625,3 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
+-    ml_peer_t *p = &ml->peers[idx];
++    ml_peer_t *p = &ml->peers[idx];
++    p->exit_route_attached = false;
++    publish_selected_exit_ready(ml);
+@@ -730,3 +762,4 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
+-                err_t r = wireguardif_add_allowed_ip(netif, wg_peer_idx,
+-                                                      &any_ip, &any_mask);
+-                ESP_LOGI(TAG, "Exit-node attach 0.0.0.0/0 for %s -> %d",
++                err_t r = wireguardif_add_allowed_ip(netif, wg_peer_idx,
++                                                      &any_ip, &any_mask);
++                p->exit_route_attached = (r == ERR_OK);
++                ESP_LOGI(TAG, "Exit-node attach 0.0.0.0/0 for %s -> %d",
+@@ -781 +847,4 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
+-    /* Persist to NVS for fast boot next time */
++    publish_selected_exit_ready(ml);
++    publish_peer_snapshot(ml);
++
++    /* Persist to NVS for fast boot next time */
+@@ -837 +872,5 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
+-    /* Remove from wireguard-lwip */
++    ml->peers[idx].exit_route_attached = false;
++    ml->peers[idx].active = false;
++    publish_selected_exit_ready(ml);
++
++    /* Remove from wireguard-lwip */
+@@ -851 +891,0 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
+-    ml->peers[idx].active = false;
+@@ -856,0 +934 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
++    publish_peer_snapshot(ml);
+@@ -901,3 +980,5 @@ static void process_peer_updates(microlink_t *ml) {
+-                    if (update->has_online) {
+-                        p->online = update->online;
+-                    }
++                    if (update->has_online) {
++                        p->online = update->online;
++                    }
++                    publish_selected_exit_ready(ml);
++                    publish_peer_snapshot(ml);
+@@ -1221,0 +1303 @@ static void process_disco_pong(microlink_t *ml, const ml_rx_packet_t *pkt,
++            publish_peer_snapshot(ml);
+@@ -1887,0 +1970 @@ static void disco_periodic_probes(microlink_t *ml) {
++            publish_peer_snapshot(ml);
+@@ -2131,3 +2171,5 @@ void ml_wg_mgr_task(void *arg) {
+-void ml_wg_mgr_task(void *arg) {
+-    microlink_t *ml = (microlink_t *)arg;
+-    ESP_LOGI(TAG, "WG Manager task started (Core %d)", xPortGetCoreID());
++void ml_wg_mgr_task(void *arg) {
++    microlink_t *ml = (microlink_t *)arg;
++    ESP_LOGI(TAG, "WG Manager task started (Core %d)", xPortGetCoreID());
++
++    __atomic_store_n(&ml->selected_exit_ready, false, __ATOMIC_RELEASE);
+@@ -2143,0 +2220 @@ void ml_wg_mgr_task(void *arg) {
++    publish_peer_snapshot(ml);
+@@ -2352,3 +2396,7 @@ static void wg_mgr_task(void *arg) {
 -    if (ml->wg_netif) {
 -        struct netif *netif = (struct netif *)ml->wg_netif;
 -        ml->wg_netif = NULL;
++    for (int i = 0; i < ml->peer_count; ++i) {
++        ml->peers[i].exit_route_attached = false;
++    }
++    __atomic_store_n(&ml->selected_exit_ready, false, __ATOMIC_RELEASE);
 +    struct netif *netif = (struct netif *)__atomic_load_n(&ml->wg_netif, __ATOMIC_ACQUIRE);
 +    if (netif) {
 +        __atomic_store_n(&ml->wg_netif, NULL, __ATOMIC_RELEASE);
