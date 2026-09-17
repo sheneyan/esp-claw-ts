@@ -468,7 +468,7 @@ static esp_err_t cap_tailscale_reconnect_execute(const char *input_json,
     cap_tailscale_copy_text(result->message, sizeof(result->message), "Reconnect requested.");
     cap_tailscale_copy_text(result->exit_state, sizeof(result->exit_state), status->exit_state);
     cap_tailscale_copy_text(result->egress, sizeof(result->egress), status->egress);
-    result->persisted = true;
+    result->persisted = false;
     err = cap_tailscale_render_mutation_json(result, output, output_size);
     free(result);
     free(status);

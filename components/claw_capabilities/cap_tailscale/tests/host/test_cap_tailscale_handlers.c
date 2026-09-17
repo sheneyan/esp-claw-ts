@@ -234,6 +234,7 @@ static void test_confirmed_mutations_and_rejections(void)
     TEST_CHECK(s_clear_calls == 1);
     TEST_CHECK(execute(4, "{\"user_confirmed\":true}", output, sizeof(output)) == ESP_OK);
     TEST_CHECK(s_reconnect_calls == 1);
+    TEST_CHECK(strstr(output, "\"persisted\":false") != NULL);
 
     set_before = s_set_calls;
     clear_before = s_clear_calls;
