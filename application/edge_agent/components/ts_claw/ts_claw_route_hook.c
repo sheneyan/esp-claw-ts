@@ -75,6 +75,10 @@ struct netif *__wrap_ip4_route_src_hook(const ip4_addr_t *src,
     }
 
     const uint32_t destination = lwip_ntohl(ip4_addr_get_u32(dest));
+    if (ts_route_is_loopback(destination)) {
+        return __real_ip4_route_src_hook(src, dest);
+    }
+
     const ts_claw_route_state_t state = ts_claw_route_hook_get_state();
 
     if (ts_route_is_cgnat(destination) && state.wg_netif != NULL) {
