@@ -39,11 +39,27 @@ export type AppConfig = {
   llm_visible_cap_groups: string;
   enabled_lua_modules: string;
   time_timezone: string;
+  tailscale_enabled: string;
+  tailscale_auth_key: string;
+  tailscale_hostname: string;
+  tailscale_login_server: string;
+  tailscale_exit_node: string;
+  tailscale_max_peers: string;
+  /** Read-only metadata. The write-only auth key is never returned. */
+  tailscale_auth_key_set: boolean;
 };
 
 /** Server-side configuration groups (must stay in sync with
  * CONFIG_FIELDS in http_server_config_api.c). */
-export type ConfigGroup = 'wifi' | 'llm' | 'im' | 'search' | 'capabilities' | 'skills' | 'time';
+export type ConfigGroup =
+  | 'wifi'
+  | 'llm'
+  | 'im'
+  | 'search'
+  | 'capabilities'
+  | 'skills'
+  | 'time'
+  | 'tailscale';
 
 export const GROUP_FIELDS: Record<ConfigGroup, (keyof AppConfig)[]> = {
   wifi: ['wifi_ssid', 'wifi_password', 'ap_ssid', 'ap_password', 'ap_behavior'],
@@ -77,6 +93,14 @@ export const GROUP_FIELDS: Record<ConfigGroup, (keyof AppConfig)[]> = {
   capabilities: ['enabled_cap_groups', 'llm_visible_cap_groups'],
   skills: ['enabled_lua_modules'],
   time: ['time_timezone'],
+  tailscale: [
+    'tailscale_enabled',
+    'tailscale_auth_key',
+    'tailscale_hostname',
+    'tailscale_login_server',
+    'tailscale_exit_node',
+    'tailscale_max_peers',
+  ],
 };
 
 export function blankConfig(): Partial<AppConfig> {
@@ -91,6 +115,31 @@ export type StatusInfo = {
   ap_ip: string;
   wifi_mode: string;
   storage_base_path: string;
+};
+
+export type TailscaleStatus = {
+  enabled: boolean;
+  connected: boolean;
+  vpn_ip: string;
+  path: string;
+  peer_count: number;
+  peer_online: number;
+  exit_node: string;
+  exit_state: string;
+  egress: string;
+  last_error: string;
+  auth_key_set: boolean;
+  heap_internal_free: number;
+  heap_internal_largest: number;
+  heap_psram_free: number;
+};
+
+export type TailscaleExitNode = {
+  ip: string;
+  hostname: string;
+  online: boolean;
+  direct: boolean;
+  derp_region: number;
 };
 
 export type CapabilityItem = {
@@ -170,6 +219,23 @@ async function request<T>(
 
 export function fetchStatus(signal?: AbortSignal) {
   return request<StatusInfo>('/api/status', { signal }, 'Failed to load status');
+}
+
+export function fetchTailscaleStatus(signal?: AbortSignal) {
+  return request<TailscaleStatus>(
+    '/api/tailscale/status',
+    { signal },
+    'Failed to load Tailscale status',
+  );
+}
+
+export async function fetchTailscaleExitNodes(signal?: AbortSignal) {
+  const data = await request<{ items: TailscaleExitNode[] }>(
+    '/api/tailscale/exit-nodes',
+    { signal },
+    'Failed to load Tailscale exit nodes',
+  );
+  return Array.isArray(data.items) ? data.items : [];
 }
 
 /** Fetch a subset of the configuration, filtered by group names. */

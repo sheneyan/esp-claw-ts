@@ -4,6 +4,7 @@ import { t } from '../i18n';
 export type TabId =
   | 'status'
   | 'basic'
+  | 'tailscale'
   | 'llm'
   | 'im'
   | 'webreq'
@@ -16,6 +17,7 @@ export type TabId =
 const [dirtyTabs, setDirtyTabs] = createSignal<Record<TabId, boolean>>({
   status: false,
   basic: false,
+  tailscale: false,
   llm: false,
   im: false,
   webreq: false,

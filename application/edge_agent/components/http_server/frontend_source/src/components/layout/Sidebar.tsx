@@ -21,6 +21,23 @@ const iconClass = 'w-4 h-4 shrink-0';
 const IconStatus: Component = () => <Activity class={iconClass} />;
 const IconGear: Component = () => <Settings class={iconClass} />;
 const IconWifi: Component = () => <WifiPen class={iconClass} />;
+const IconTailscale: Component = () => (
+  <svg
+    class={iconClass}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="6" cy="12" r="2" />
+    <circle cx="18" cy="6" r="2" />
+    <circle cx="18" cy="18" r="2" />
+    <path d="m8 11 8-4M8 13l8 4" />
+  </svg>
+);
 const IconLlm: Component = () => <Bot class={iconClass} />;
 const IconIm: Component = () => <MessageSquareCode class={iconClass} />;
 const IconSearch: Component = () => <Search class={iconClass} />;
@@ -36,6 +53,7 @@ export type LeafNode = {
   labelKey:
     | 'navStatus'
     | 'navBasic'
+    | 'navTailscale'
     | 'navLlm'
     | 'navIm'
     | 'navWebReq'
@@ -64,6 +82,7 @@ export const NAV_TREE: NavNode[] = [
     icon: IconGear,
     children: [
       { kind: 'leaf', id: 'basic', labelKey: 'navBasic', icon: IconWifi },
+      { kind: 'leaf', id: 'tailscale', labelKey: 'navTailscale', icon: IconTailscale },
       { kind: 'leaf', id: 'llm', labelKey: 'navLlm', icon: IconLlm },
       { kind: 'leaf', id: 'im', labelKey: 'navIm', icon: IconIm },
       { kind: 'leaf', id: 'webreq', labelKey: 'navWebReq', icon: IconSearch },

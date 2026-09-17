@@ -97,11 +97,15 @@ export async function reloadConfigGroups(groups: ConfigGroup[]): Promise<void> {
 
 /** Apply a locally-known patch to the cache after a successful save. */
 export function patchConfigLocal(patch: Partial<AppConfig>) {
-  setConfigStore(patch);
+  const safePatch = { ...patch };
+  // This credential is write-only. Do not retain a submitted value in the
+  // shared browser-side configuration cache after the request completes.
+  delete safePatch.tailscale_auth_key;
+  setConfigStore(safePatch);
 }
 
 export async function saveConfig(patch: Partial<AppConfig>) {
   const result = await saveConfigPatch(patch);
-  setConfigStore(patch);
+  patchConfigLocal(patch);
   return result;
 }
