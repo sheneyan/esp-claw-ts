@@ -55,11 +55,16 @@ static void test_rfc1918_boundaries(void)
     TEST_CHECK(ts_route_classify(0xC0A8FFFFu, true) == TS_ROUTE_STA);
 }
 
-static void test_loopback_and_link_local_stay_on_sta(void)
+static void test_loopback_delegates_and_link_local_stays_on_sta(void)
 {
+    TEST_CHECK(!ts_route_is_loopback(0x7EFFFFFFu));
+    TEST_CHECK(ts_route_is_loopback(0x7F000000u));
+    TEST_CHECK(ts_route_is_loopback(0x7FFFFFFFu));
+    TEST_CHECK(!ts_route_is_loopback(0x80000000u));
+
     TEST_CHECK(ts_route_classify(0x7EFFFFFFu, true) == TS_ROUTE_WG);
-    TEST_CHECK(ts_route_classify(0x7F000000u, true) == TS_ROUTE_STA);
-    TEST_CHECK(ts_route_classify(0x7FFFFFFFu, true) == TS_ROUTE_STA);
+    TEST_CHECK(ts_route_classify(0x7F000000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0x7FFFFFFFu, true) == TS_ROUTE_DEFAULT);
     TEST_CHECK(ts_route_classify(0x80000000u, true) == TS_ROUTE_WG);
 
     TEST_CHECK(ts_route_classify(0xA9FDFFFFu, true) == TS_ROUTE_WG);
@@ -333,7 +338,7 @@ int main(void)
     test_route_classification();
     test_cgnat_boundaries();
     test_rfc1918_boundaries();
-    test_loopback_and_link_local_stay_on_sta();
+    test_loopback_delegates_and_link_local_stays_on_sta();
     test_non_public_special_ranges_use_default_route();
     test_exit_activation_and_fallback_thresholds();
     test_repeated_tunnel_up_preserves_probe_progress();
