@@ -29,64 +29,67 @@ typedef struct {
 
 typedef struct {
     cap_tailscale_region_t region;
-    uint32_t latency_ms;
+    uint16_t rtt_ms;
+    bool timed_out;
 } cap_tailscale_derp_rtt_t;
 
 typedef struct {
-    char hostname[CAP_TAILSCALE_HOSTNAME_LEN];
-    char ip[CAP_TAILSCALE_IP_LEN];
-    char exit_state[CAP_TAILSCALE_ERROR_LEN];
-    char egress[CAP_TAILSCALE_ERROR_LEN];
+    bool enabled;
     bool connected;
-    bool exit_node_active;
+    char hostname[CAP_TAILSCALE_HOSTNAME_LEN];
+    char vpn_ip[CAP_TAILSCALE_IP_LEN];
+    char path[16];
+    int peer_count;
+    int peer_online;
+    char exit_node[CAP_TAILSCALE_IP_LEN];
+    char exit_state[16];
+    char egress[16];
+    char last_error[CAP_TAILSCALE_ERROR_LEN];
+    cap_tailscale_region_t derp_active;
+    cap_tailscale_region_t derp_default;
     cap_tailscale_derp_rtt_t derp_rtts[CAP_TAILSCALE_MAX_DERP_RTTS];
     size_t derp_rtt_count;
+    uint64_t derp_heartbeat_age_ms;
+    uint64_t control_rx_age_ms;
+    uint32_t reconnect_coord_watchdog;
+    uint32_t reconnect_coord_transport;
+    uint32_t reconnect_derp_watchdog;
+    uint32_t reconnect_derp_retry;
 } cap_tailscale_status_t;
 
 typedef struct {
-    char hostname[CAP_TAILSCALE_HOSTNAME_LEN];
     char ip[CAP_TAILSCALE_IP_LEN];
-    cap_tailscale_region_t region;
+    char hostname[CAP_TAILSCALE_HOSTNAME_LEN];
     bool online;
-    bool selected;
+    bool direct;
+    cap_tailscale_region_t derp_region;
 } cap_tailscale_exit_node_t;
 
 typedef struct {
     bool ok;
-    char error[CAP_TAILSCALE_ERROR_LEN];
+    char error[32];
     char message[CAP_TAILSCALE_ERROR_LEN];
     char selected_ip[CAP_TAILSCALE_IP_LEN];
     char selected_hostname[CAP_TAILSCALE_HOSTNAME_LEN];
-    char exit_state[CAP_TAILSCALE_ERROR_LEN];
-    char egress[CAP_TAILSCALE_ERROR_LEN];
+    char exit_state[16];
+    char egress[16];
     bool persisted;
 } cap_tailscale_mutation_result_t;
 
-typedef esp_err_t (*cap_tailscale_get_status_fn)(cap_tailscale_status_t *out_status, void *user_ctx);
-typedef esp_err_t (*cap_tailscale_list_exit_nodes_fn)(cap_tailscale_exit_node_t *out_nodes,
-                                                       size_t max_nodes,
-                                                       size_t *out_count,
-                                                       void *user_ctx);
-typedef esp_err_t (*cap_tailscale_set_exit_node_fn)(const char *selector,
-                                                     cap_tailscale_mutation_result_t *out_result,
-                                                     void *user_ctx);
-typedef esp_err_t (*cap_tailscale_clear_exit_node_fn)(cap_tailscale_mutation_result_t *out_result,
-                                                       void *user_ctx);
-typedef esp_err_t (*cap_tailscale_reconnect_fn)(cap_tailscale_mutation_result_t *out_result,
-                                                 void *user_ctx);
-
 /**
- * Provider callbacks return transport/runtime failures as esp_err_t. For a
- * request that executes but is rejected semantically, return ESP_OK and
- * describe that rejection in out_result with ok set to false.
+ * The set and clear callbacks return transport/runtime failures as esp_err_t.
+ * For a request that executes but is rejected semantically, return ESP_OK and
+ * describe that rejection in out with ok set to false.
  */
 typedef struct {
-    cap_tailscale_get_status_fn get_status;
-    cap_tailscale_list_exit_nodes_fn list_exit_nodes;
-    cap_tailscale_set_exit_node_fn set_exit_node;
-    cap_tailscale_clear_exit_node_fn clear_exit_node;
-    cap_tailscale_reconnect_fn reconnect;
-    void *user_ctx;
+    esp_err_t (*get_status)(cap_tailscale_status_t *out, void *ctx);
+    int (*list_exit_nodes)(cap_tailscale_exit_node_t *out, size_t capacity, void *ctx);
+    esp_err_t (*set_exit_node)(const char *selector,
+                               cap_tailscale_mutation_result_t *out,
+                               void *ctx);
+    esp_err_t (*clear_exit_node)(cap_tailscale_mutation_result_t *out, void *ctx);
+    esp_err_t (*reconnect)(cap_tailscale_status_t *out, void *ctx);
+    void *ctx;
 } cap_tailscale_provider_t;
 
 esp_err_t cap_tailscale_set_provider(const cap_tailscale_provider_t *provider);
