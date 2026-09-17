@@ -1,9 +1,12 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from 'solid-js';
 import {
+  clearTailscaleExitNode,
   fetchTailscaleExitNodes,
   fetchTailscaleStatus,
+  setTailscaleExitNode,
   type AppConfig,
   type TailscaleExitNode,
+  type TailscaleOperation,
   type TailscaleStatus,
 } from '../api/client';
 import { TabShell } from '../components/layout/TabShell';
@@ -78,13 +81,15 @@ export const TailscalePage: Component = () => {
       tailscale_auth_key: form.tailscale_auth_key.trim(),
       tailscale_hostname: form.tailscale_hostname.trim(),
       tailscale_login_server: form.tailscale_login_server.trim(),
-      tailscale_exit_node: form.tailscale_exit_node.trim(),
       tailscale_max_peers: form.tailscale_max_peers.trim(),
     }),
   });
   const [status, setStatus] = createSignal<TailscaleStatus | null>(null);
   const [exitNodes, setExitNodes] = createSignal<TailscaleExitNode[]>([]);
   const [runtimeError, setRuntimeError] = createSignal<string | null>(null);
+  const [exitNodesError, setExitNodesError] = createSignal<string | null>(null);
+  const [mutationError, setMutationError] = createSignal<string | null>(null);
+  const [mutatingExitNode, setMutatingExitNode] = createSignal(false);
   const [refreshing, setRefreshing] = createSignal(false);
   const [validationError, setValidationError] = createSignal<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -115,8 +120,9 @@ export const TailscalePage: Component = () => {
       }
       if (exitNodesResult.status === 'fulfilled') {
         setExitNodes(exitNodesResult.value);
+        setExitNodesError(null);
       } else if ((exitNodesResult.reason as Error).name !== 'AbortError') {
-        errors.push((exitNodesResult.reason as Error).message);
+        setExitNodesError((exitNodesResult.reason as Error).message);
       }
       setRuntimeError(errors.length > 0 ? Array.from(new Set(errors)).join(' · ') : null);
     } finally {
@@ -147,6 +153,32 @@ export const TailscalePage: Component = () => {
   const peersText = () => {
     const current = status();
     return current ? `${current.peer_online} / ${current.peer_count}` : '';
+  };
+
+  const mutationErrorMessage = (error: Error & { operation?: TailscaleOperation }) => {
+    const operation = error.operation;
+    if (!operation?.rollback_attempted) return error.message;
+    return operation.rollback_recovered
+      ? `${error.message} ${t('tailscaleRollbackRecovered')}`
+      : `${error.message} ${t('tailscaleRollbackFailed')}`;
+  };
+
+  const handleExitNodeChange = async (nextNode: string) => {
+    if (mutatingExitNode()) return;
+    setMutatingExitNode(true);
+    setMutationError(null);
+    try {
+      if (nextNode) {
+        await setTailscaleExitNode(nextNode);
+      } else {
+        await clearTailscaleExitNode();
+      }
+    } catch (error) {
+      setMutationError(mutationErrorMessage(error as Error & { operation?: TailscaleOperation }));
+    } finally {
+      await Promise.allSettled([refreshRuntime(true), tab.reload()]);
+      setMutatingExitNode(false);
+    }
   };
 
   const handleSave = async () => {
@@ -222,15 +254,17 @@ export const TailscalePage: Component = () => {
           </div>
         </StaticConfigBlock>
         <StaticConfigBlock title={t('tailscaleSectionSettings') as string}>
-          <Show
-            when={isGroupLoaded('tailscale')}
-            fallback={
-              <Show when={tab.loading()}>
-                <div class="py-3 text-sm text-[var(--color-text-muted)]">{t('statusLoading')}</div>
-              </Show>
-            }
-          >
-            <div class="grid gap-3 pt-2 sm:grid-cols-2">
+          <div class="grid gap-3 pt-2 sm:grid-cols-2">
+            <Show
+              when={isGroupLoaded('tailscale')}
+              fallback={
+                <Show when={tab.loading()}>
+                  <div class="py-3 text-sm text-[var(--color-text-muted)] sm:col-span-2">
+                    {t('statusLoading')}
+                  </div>
+                </Show>
+              }
+            >
               <div class="flex items-start sm:col-span-2">
                 <Switch
                   checked={tab.form.tailscale_enabled}
@@ -267,22 +301,34 @@ export const TailscalePage: Component = () => {
                   tab.setForm('tailscale_login_server', event.currentTarget.value)
                 }
               />
-              <SelectInput
-                label={t('tailscaleExitNode')}
-                hint={t('tailscaleExitNodeHint') as string}
-                value={tab.form.tailscale_exit_node}
-                onChange={(event) => tab.setForm('tailscale_exit_node', event.currentTarget.value)}
-              >
-                <option value="">{t('tailscaleExitNodeNone') as string}</option>
-                <Show when={tab.form.tailscale_exit_node && !selectedExitIsListed()}>
-                  <option value={tab.form.tailscale_exit_node}>
-                    {tab.form.tailscale_exit_node} · {t('tailscaleExitNodeUnavailable') as string}
+            </Show>
+            <SelectInput
+              label={t('tailscaleExitNode')}
+              hint={
+                mutatingExitNode()
+                  ? (t('tailscaleExitNodeSwitching') as string)
+                  : (t('tailscaleExitNodeHint') as string)
+              }
+              error={mutationError() ?? exitNodesError() ?? undefined}
+              value={tab.form.tailscale_exit_node}
+              disabled={mutatingExitNode()}
+              onChange={(event) => void handleExitNodeChange(event.currentTarget.value)}
+            >
+              <option value="">{t('tailscaleExitNodeNone') as string}</option>
+              <Show when={tab.form.tailscale_exit_node && !selectedExitIsListed()}>
+                <option value={tab.form.tailscale_exit_node} disabled>
+                  {tab.form.tailscale_exit_node} · {t('tailscaleExitNodeUnavailable') as string}
+                </option>
+              </Show>
+              <For each={exitNodes()}>
+                {(node) => (
+                  <option value={node.ip} disabled={!node.online}>
+                    {exitNodeLabel(node)}
                   </option>
-                </Show>
-                <For each={exitNodes()}>
-                  {(node) => <option value={node.ip}>{exitNodeLabel(node)}</option>}
-                </For>
-              </SelectInput>
+                )}
+              </For>
+            </SelectInput>
+            <Show when={isGroupLoaded('tailscale')}>
               <TextInput
                 type="number"
                 min="1"
@@ -295,8 +341,8 @@ export const TailscalePage: Component = () => {
                   tab.setForm('tailscale_max_peers', event.currentTarget.value);
                 }}
               />
-            </div>
-          </Show>
+            </Show>
+          </div>
         </StaticConfigBlock>
       </div>
       <Show when={isGroupLoaded('tailscale')}>
@@ -308,7 +354,7 @@ export const TailscalePage: Component = () => {
             setValidationError(null);
             tab.discard();
           }}
-          note={t('restartHint') as string}
+          note={tab.dirty() ? (t('restartHint') as string) : undefined}
         />
       </Show>
     </TabShell>

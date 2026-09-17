@@ -142,6 +142,29 @@ export type TailscaleExitNode = {
   derp_region: number;
 };
 
+export type TailscaleOperation = {
+  ok: boolean;
+  error: string;
+  message: string;
+  selected_ip: string;
+  selected_hostname: string;
+  exit_state: string;
+  egress: string;
+  persisted: boolean;
+  rollback_attempted: boolean;
+  rollback_recovered: boolean;
+};
+
+export class TailscaleOperationError extends Error {
+  readonly operation: TailscaleOperation;
+
+  constructor(operation: TailscaleOperation, fallback: string) {
+    super(operation.message || operation.error || fallback);
+    this.name = 'TailscaleOperationError';
+    this.operation = operation;
+  }
+}
+
 export type CapabilityItem = {
   group_id: string;
   display_name: string;
@@ -187,8 +210,11 @@ async function parseError(response: Response, fallback: string): Promise<Error> 
   if (text) {
     try {
       const parsed = JSON.parse(text);
+      if (isTailscaleOperation(parsed)) {
+        return new TailscaleOperationError(parsed, fallback);
+      }
       if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
-        return new Error(parsed.error);
+        return new Error(typeof parsed.message === 'string' ? parsed.message : parsed.error);
       }
     } catch {
       /* not JSON, return plain text */
@@ -196,6 +222,18 @@ async function parseError(response: Response, fallback: string): Promise<Error> 
     return new Error(text);
   }
   return new Error(fallback);
+}
+
+function isTailscaleOperation(value: unknown): value is TailscaleOperation {
+  if (!value || typeof value !== 'object') return false;
+  const operation = value as Partial<TailscaleOperation>;
+  return (
+    typeof operation.ok === 'boolean' &&
+    typeof operation.error === 'string' &&
+    typeof operation.message === 'string' &&
+    typeof operation.rollback_attempted === 'boolean' &&
+    typeof operation.rollback_recovered === 'boolean'
+  );
 }
 
 async function request<T>(
@@ -236,6 +274,34 @@ export async function fetchTailscaleExitNodes(signal?: AbortSignal) {
     'Failed to load Tailscale exit nodes',
   );
   return Array.isArray(data.items) ? data.items : [];
+}
+
+export function setTailscaleExitNode(node: string) {
+  return request<TailscaleOperation>(
+    '/api/tailscale/exit-node',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node }),
+    },
+    'Failed to switch Exit Node',
+  );
+}
+
+export function clearTailscaleExitNode() {
+  return request<TailscaleOperation>(
+    '/api/tailscale/exit-node',
+    { method: 'DELETE' },
+    'Failed to clear Exit Node',
+  );
+}
+
+export function reconnectTailscale() {
+  return request<TailscaleOperation>(
+    '/api/tailscale/reconnect',
+    { method: 'POST' },
+    'Failed to reconnect Tailscale',
+  );
 }
 
 /** Fetch a subset of the configuration, filtered by group names. */
