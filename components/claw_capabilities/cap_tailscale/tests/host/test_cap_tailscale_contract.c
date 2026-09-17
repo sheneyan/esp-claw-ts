@@ -239,12 +239,91 @@ static void test_count_bounds(void)
     TEST_CHECK(cap_tailscale_bound_derp_rtt_count(SIZE_MAX) == CAP_TAILSCALE_MAX_DERP_RTTS);
 }
 
+static void test_model_descriptor_ids_and_safe_status_rendering(void)
+{
+    static const char *const expected_ids[] = {
+        "tailscale_status",
+        "tailscale_list_exit_nodes",
+        "tailscale_set_exit_node",
+        "tailscale_clear_exit_node",
+        "tailscale_reconnect",
+    };
+    static const char *const forbidden[] = {
+        "auth_key",
+        "wan_public_ip",
+        "public_key",
+        "private_key",
+        "control_payload",
+        "AUTH_KEY_SENTINEL",
+        "WAN_PUBLIC_IP_SENTINEL",
+        "PUBLIC_KEY_SENTINEL",
+        "PRIVATE_KEY_SENTINEL",
+        "CONTROL_PAYLOAD_SENTINEL",
+    };
+    cap_tailscale_status_t status = {0};
+    char output[4096];
+    char tiny_output[8];
+    size_t index;
+
+    status.enabled = true;
+    status.connected = true;
+    snprintf(status.hostname, sizeof(status.hostname), "hostname-sentinel");
+    snprintf(status.vpn_ip, sizeof(status.vpn_ip), "100.64.0.1");
+    snprintf(status.path, sizeof(status.path), "derp");
+    status.peer_count = 17;
+    status.peer_online = 8;
+    snprintf(status.exit_node, sizeof(status.exit_node), "100.64.0.2");
+    snprintf(status.exit_state, sizeof(status.exit_state), "active");
+    snprintf(status.egress, sizeof(status.egress), "exit_node");
+    snprintf(status.last_error, sizeof(status.last_error), "safe-error-sentinel");
+    status.derp_active.id = 1;
+    snprintf(status.derp_active.name, sizeof(status.derp_active.name), "active-derp-sentinel");
+    status.derp_default.id = 2;
+    snprintf(status.derp_default.name, sizeof(status.derp_default.name), "default-derp-sentinel");
+    status.derp_rtts[0].region.id = 3;
+    snprintf(status.derp_rtts[0].region.name, sizeof(status.derp_rtts[0].region.name), "rtt-derp-sentinel");
+    status.derp_rtts[0].rtt_ms = 42;
+    status.derp_rtt_count = 1;
+    status.derp_heartbeat_age_ms = 1234;
+    status.control_rx_age_ms = 5678;
+    status.reconnect_coord_watchdog = 1;
+    status.reconnect_coord_transport = 2;
+    status.reconnect_derp_watchdog = 3;
+    status.reconnect_derp_retry = 4;
+
+    TEST_CHECK(cap_tailscale_descriptor_count() == sizeof(expected_ids) / sizeof(expected_ids[0]));
+    for (index = 0; index < sizeof(expected_ids) / sizeof(expected_ids[0]); ++index) {
+        TEST_CHECK(strcmp(cap_tailscale_descriptor_id(index), expected_ids[index]) == 0);
+    }
+    TEST_CHECK(cap_tailscale_descriptor_id(sizeof(expected_ids) / sizeof(expected_ids[0])) == NULL);
+
+    TEST_CHECK(cap_tailscale_render_status_json(&status, output, sizeof(output)) == ESP_OK);
+    TEST_CHECK(strstr(output, "hostname-sentinel") != NULL);
+    TEST_CHECK(strstr(output, "100.64.0.1") != NULL);
+    TEST_CHECK(strstr(output, "active-derp-sentinel") != NULL);
+    TEST_CHECK(strstr(output, "rtt-derp-sentinel") != NULL);
+    TEST_CHECK(strstr(output, "\"peer_count\":17") != NULL);
+    TEST_CHECK(strstr(output, "\"state\":\"active\"") != NULL);
+    TEST_CHECK(strstr(output, "\"egress\":\"exit_node\"") != NULL);
+    for (index = 0; index < sizeof(forbidden) / sizeof(forbidden[0]); ++index) {
+        TEST_CHECK(strstr(output, forbidden[index]) == NULL);
+    }
+
+    memset(tiny_output, 'x', sizeof(tiny_output));
+    TEST_CHECK(cap_tailscale_render_status_json(&status, tiny_output, sizeof(tiny_output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(tiny_output[0] == '\0');
+    TEST_CHECK(cap_tailscale_render_status_json(NULL, output, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_render_status_json(&status, NULL, sizeof(output)) == ESP_ERR_INVALID_ARG);
+    TEST_CHECK(cap_tailscale_render_status_json(&status, output, 0) == ESP_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
     test_public_contract_shape();
     test_read_and_mutation_validation();
     test_selector_normalization_and_cgnat_range();
     test_count_bounds();
+    test_model_descriptor_ids_and_safe_status_rendering();
 
     puts("cap_tailscale_contract: all tests passed");
     return 0;

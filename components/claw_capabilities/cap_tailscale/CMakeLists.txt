@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "src/cap_tailscale.c"
+        "src/cap_tailscale_contract.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "private_include"
+    REQUIRES
+        claw_cap
+)
