@@ -25,6 +25,12 @@ bool app_config_tailscale_validate(const app_config_tailscale_view_t *cfg,
                                    char *message,
                                    size_t message_size);
 
+bool app_config_string_update_validate(bool is_string,
+                                       const char *value,
+                                       size_t capacity,
+                                       char *message,
+                                       size_t message_size);
+
 #ifdef __cplusplus
 }
 #endif

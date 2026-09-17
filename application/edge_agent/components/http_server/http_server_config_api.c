@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_config_tailscale_validation.h"
 #include "esp_log.h"
 
 /*
@@ -336,15 +337,23 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     size_t recognised_count = 0;
     size_t applied_count = 0;
 
+    /* Validate the entire recognised patch before changing the loaded config. */
     for (size_t i = 0; i < CONFIG_FIELD_COUNT; i++) {
         const config_field_def_t *field = &CONFIG_FIELDS[i];
         cJSON *item = cJSON_GetObjectItemCaseSensitive(root, field->name);
-        if (!cJSON_IsString(item)) {
+        if (!item) {
             continue;
         }
         recognised_count++;
-        if (field->write_only && item->valuestring[0] == '\0') {
-            continue;
+
+        char update_error[64];
+        bool is_string = cJSON_IsString(item);
+        const char *value = is_string ? item->valuestring : NULL;
+        if (!app_config_string_update_validate(is_string, value, field->size,
+                                               update_error, sizeof(update_error))) {
+            cJSON_Delete(root);
+            free(config);
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, update_error);
         }
         if (strcmp(field->name, "llm_max_tokens") == 0 ||
                 strcmp(field->name, "llm_default_image_max_bytes") == 0) {
@@ -367,6 +376,17 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             return httpd_resp_send_err(req,
                                        HTTPD_400_BAD_REQUEST,
                                        "LLM boolean fields must be true/false");
+        }
+    }
+
+    for (size_t i = 0; i < CONFIG_FIELD_COUNT; i++) {
+        const config_field_def_t *field = &CONFIG_FIELDS[i];
+        cJSON *item = cJSON_GetObjectItemCaseSensitive(root, field->name);
+        if (!item) {
+            continue;
+        }
+        if (field->write_only && item->valuestring[0] == '\0') {
+            continue;
         }
         strlcpy(field_mutable(config, field), item->valuestring, field->size);
         applied_count++;

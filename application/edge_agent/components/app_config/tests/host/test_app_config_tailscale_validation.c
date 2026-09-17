@@ -177,6 +177,19 @@ static void test_null_fields_are_safe_and_messages_do_not_leak_keys(void)
     CHECK(validate(&config, NULL, 0));
 }
 
+static void test_string_update_boundary(void)
+{
+    char message[128];
+
+    CHECK(app_config_string_update_validate(true, "1234567", 8, message, sizeof(message)));
+    CHECK(message[0] == '\0');
+    CHECK(!app_config_string_update_validate(true, "12345678", 8, message, sizeof(message)));
+    CHECK(!app_config_string_update_validate(true, "123456789", 8, message, sizeof(message)));
+    CHECK(!app_config_string_update_validate(false, "123", 8, message, sizeof(message)));
+    CHECK(!app_config_string_update_validate(true, NULL, 8, message, sizeof(message)));
+    CHECK(strstr(message, "123456789") == NULL);
+}
+
 int main(void)
 {
     test_defaults_and_disabled_are_valid();
@@ -186,6 +199,7 @@ int main(void)
     test_enabled_hostname_length();
     test_login_server_supported_forms();
     test_null_fields_are_safe_and_messages_do_not_leak_keys();
+    test_string_update_boundary();
 
     if (s_failures != 0) {
         fprintf(stderr, "%d test assertion(s) failed\n", s_failures);

@@ -18,6 +18,24 @@ static bool fail_with(char *message, size_t message_size, const char *text)
     return false;
 }
 
+bool app_config_string_update_validate(bool is_string,
+                                       const char *value,
+                                       size_t capacity,
+                                       char *message,
+                                       size_t message_size)
+{
+    if (message && message_size > 0) {
+        message[0] = '\0';
+    }
+    if (!is_string || !value) {
+        return fail_with(message, message_size, "Config field value must be a string");
+    }
+    if (capacity == 0 || strlen(value) >= capacity) {
+        return fail_with(message, message_size, "Config field value is too long");
+    }
+    return true;
+}
+
 static bool parse_decimal_range(const char *value, unsigned minimum, unsigned maximum)
 {
     unsigned parsed = 0;
