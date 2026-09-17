@@ -25,6 +25,11 @@ CONFIG_ML_H2_BUFFER_SIZE_KB=512
 CONFIG_ML_JSON_BUFFER_SIZE_KB=512
 CONFIG_ML_ENABLE_CELLULAR=n
 
+# WireGuard owns lwIP netif->state. Enabling special-netif support makes
+# ESP-NETIF keep its private pointer in netif->client_data instead.
+# MicroLink's ESP-IDF examples use the same compatibility path.
+CONFIG_LWIP_PPP_SUPPORT=y
+
 # Required by the MicroLink Noise transport.
 CONFIG_MBEDTLS_CHACHA20_C=y
 CONFIG_MBEDTLS_POLY1305_C=y

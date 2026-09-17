@@ -17,13 +17,13 @@ set(_MICROLINK_ORIGINAL_INTERNAL_HEADER_SHA256
 set(_MICROLINK_PATCHED_STUN_SHA256
     "9f2bf58ce17251401e3613e61cc4507219f19447087874a905732f864b09b316")
 set(_MICROLINK_PATCHED_COORD_SHA256
-    "14148660f23e76ef5ea7a16d571d3620cb71c08b9f1649007a35fda9e97bc5fd")
+    "c37bb9e222a83d2c092488b9cb71b67dbef3efec4378b1a29fea895a0ec9339f")
 set(_MICROLINK_PATCHED_CORE_SHA256
     "543abb26b4cb34819ddd19e136beec59efe30ef7defd7b6468033b886da95b21")
 set(_MICROLINK_PATCHED_PEER_NVS_SHA256
     "7388ac0b2cabf84f91645716fcc443e9ecf8685e07bbdd5a01c24b54eb505fb5")
 set(_MICROLINK_PATCHED_WG_MGR_SHA256
-    "1fcd4e5a613da008880e5affdff9150dcb2d69787309666b8125dc75b6169edf")
+    "ee2492296b52d3dc1778b7a581d078f4473246a205b9c1ff69dccc7dc4ec8617")
 set(_MICROLINK_PATCHED_PUBLIC_HEADER_SHA256
     "42b6d15f884ab1888840e220bdd8389935b80aff0b48e70ed6cbfe9b9d480bda")
 set(_MICROLINK_PATCHED_INTERNAL_HEADER_SHA256
@@ -114,6 +114,13 @@ function(_microlink_assert_upstream_bind_patch source_dir)
         message(FATAL_ERROR
             "MicroLink patched copy must use exactly two acquire loads for upstream netif reads: ${source_dir}")
     endif()
+    string(FIND "${_coord_source}"
+        "ml->config.netcheck_override_enabled ? ml_netcheck_pick_best_derp(ml) : 0"
+        _disabled_netcheck_skip_offset)
+    if(_disabled_netcheck_skip_offset EQUAL -1)
+        message(FATAL_ERROR
+            "MicroLink patched copy must skip DERP netcheck when override is disabled: ${source_dir}")
+    endif()
 
     file(READ "${source_dir}/src/ml_wg_mgr.c" _wg_mgr_source)
     string(FIND "${_wg_mgr_source}"
@@ -149,6 +156,14 @@ function(_microlink_assert_upstream_bind_patch source_dir)
        _wg_publish_offset EQUAL -1 OR _wg_clear_offset LESS _wg_publish_offset)
         message(FATAL_ERROR
             "MicroLink patched copy must acquire-load the WG netif getter/teardown and release-store publish/clear: ${source_dir}")
+    endif()
+    string(FIND "${_wg_mgr_source}"
+        "add->added = netif_add(add->netif" _netif_add_offset)
+    string(FIND "${_wg_mgr_source}"
+        "netif->next = netif_list" _manual_netif_insert_offset)
+    if(_netif_add_offset EQUAL -1 OR NOT _manual_netif_insert_offset EQUAL -1)
+        message(FATAL_ERROR
+            "MicroLink patched copy must register the WG netif through netif_add on the TCPIP thread: ${source_dir}")
     endif()
     string(REGEX MATCHALL
         "__atomic_load_n\\(&ml->selected_exit_ready, __ATOMIC_ACQUIRE\\)"

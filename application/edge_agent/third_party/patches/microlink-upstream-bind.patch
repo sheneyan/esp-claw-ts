@@ -205,6 +205,9 @@ diff --git a/src/ml_coord.c b/src/ml_coord.c
 +        struct ifreq tls_if;
 @@ -762,0 +781 @@ static int do_tcp_connect(microlink_t *ml) {
 +            .if_name           = ml_upstream_ifreq(ml, &tls_if),
+@@ -2213 +2232 @@ static bool parse_derp_map_from_response(microlink_t *ml, cJSON *map_json) {
+-        uint16_t measured = ml_netcheck_pick_best_derp(ml);
++        uint16_t measured = ml->config.netcheck_override_enabled ? ml_netcheck_pick_best_derp(ml) : 0;
 diff --git a/src/ml_peer_nvs.c b/src/ml_peer_nvs.c
 --- a/src/ml_peer_nvs.c
 +++ b/src/ml_peer_nvs.c
@@ -236,10 +239,42 @@ diff --git a/src/ml_peer_nvs.c b/src/ml_peer_nvs.c
 diff --git a/src/ml_wg_mgr.c b/src/ml_wg_mgr.c
 --- a/src/ml_wg_mgr.c
 +++ b/src/ml_wg_mgr.c
+@@ -50,6 +50,20 @@ static void disco_send_ping_to_peer(microlink_t *ml, int peer_idx, bool force);
+-static void wg_netif_bring_up_cb(void *ctx)
+-{
+-    struct netif *netif = (struct netif *)ctx;
+-    netif_set_up(netif);
+-    netif_set_link_up(netif);
+-}
++typedef struct {
++    struct netif *netif;
++    struct wireguardif_init_data *init_data;
++    ip4_addr_t ip;
++    ip4_addr_t netmask;
++    ip4_addr_t gateway;
++    bool added;
++} wg_netif_add_ctx_t;
++
++static void wg_netif_add_cb(void *ctx)
++{
++    wg_netif_add_ctx_t *add = (wg_netif_add_ctx_t *)ctx;
++    add->added = netif_add(add->netif, &add->ip, &add->netmask, &add->gateway,
++                           add->init_data, wireguardif_init, tcpip_input) != NULL;
++    if (add->added) {
++        netif_set_up(add->netif);
++        netif_set_link_up(add->netif);
++    }
++}
++
 @@ -230 +230 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
 -    if (ml) ml->upstream_netif = (void *)upstream;
 +    if (ml) __atomic_store_n(&ml->upstream_netif, (void *)upstream, __ATOMIC_RELEASE);
-@@ -234,0 +235,62 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
+@@ -231,4 +245,66 @@ esp_err_t microlink_pin_wg_output_netif(microlink_t *ml, struct netif *upstream)
+     if (!s_wg_output_pcb) return ESP_ERR_INVALID_STATE;
+     tcpip_callback_with_block(pin_wg_output_cb, (void *)upstream, 1);
+     return ESP_OK;
+ }
++
 +struct netif *microlink_get_wg_netif(const microlink_t *ml)
 +{
 +    return ml ? (struct netif *)__atomic_load_n(&ml->wg_netif, __ATOMIC_ACQUIRE) : NULL;
@@ -301,6 +336,64 @@ diff --git a/src/ml_wg_mgr.c b/src/ml_wg_mgr.c
 +    ml->peer_snapshot_online = online;
 +    xSemaphoreGive(ml->peer_snapshot_lock);
 +}
+@@ -379,34 +455,24 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
+-    /* Initialize WireGuard netif */
+-    netif->state = &wg_init;
+-    err_t err = wireguardif_init(netif);
+-    if (err != ERR_OK) {
+-        ESP_LOGE(TAG, "wireguardif_init failed: %d", err);
+-        free(netif);
+-        return ESP_FAIL;
+-    }
+-
+-    /* Set IP addresses: our VPN IP (or temporary until we get one) */
+-    if (ml->vpn_ip != 0) {
+-        uint8_t a = (ml->vpn_ip >> 24) & 0xFF;
+-        uint8_t b = (ml->vpn_ip >> 16) & 0xFF;
+-        uint8_t c = (ml->vpn_ip >> 8) & 0xFF;
+-        uint8_t d = ml->vpn_ip & 0xFF;
+-        IP4_ADDR(&netif->ip_addr.u_addr.ip4, a, b, c, d);
+-    } else {
+-        IP4_ADDR(&netif->ip_addr.u_addr.ip4, 100, 64, 0, 1);  /* temp */
+-    }
+-    IP4_ADDR(&netif->netmask.u_addr.ip4, 255, 192, 0, 0);     /* /10 */
+-    IP4_ADDR(&netif->gw.u_addr.ip4, 0, 0, 0, 0);
+-
+-    /* Use tcpip_input so decrypted packets are posted to the TCPIP thread.
+-     * Required for TCP (esp_http_server sockets) — ip_input from the wg_mgr
+-     * thread accesses TCP PCB state without synchronization.  The WG output
+-     * callback uses raw udp_sendto (not BSD sendto) to avoid deadlock. */
+-    netif->input = tcpip_input;
+-
+-    /* Add to lwIP netif list (bypass netif_add which wants init callback) */
+-    netif->next = netif_list;
+-    netif_list = netif;
+-
+-    /* Bring interface up via tcpip_thread (see wg_netif_bring_up_cb above) */
+-    tcpip_callback_with_block(wg_netif_bring_up_cb, netif, 1);
++    wg_netif_add_ctx_t add = {
++        .netif = netif,
++        .init_data = &wg_init,
++    };
++    if (ml->vpn_ip != 0) {
++        uint8_t a = (ml->vpn_ip >> 24) & 0xFF;
++        uint8_t b = (ml->vpn_ip >> 16) & 0xFF;
++        uint8_t c = (ml->vpn_ip >> 8) & 0xFF;
++        uint8_t d = ml->vpn_ip & 0xFF;
++        IP4_ADDR(&add.ip, a, b, c, d);
++    } else {
++        IP4_ADDR(&add.ip, 100, 64, 0, 1);  /* temp */
++    }
++    IP4_ADDR(&add.netmask, 255, 192, 0, 0);  /* /10 */
++    IP4_ADDR(&add.gateway, 0, 0, 0, 0);
++
++    err_t err = tcpip_callback_with_block(wg_netif_add_cb, &add, 1);
++    if (err != ERR_OK || !add.added) {
++        ESP_LOGE(TAG, "wireguard netif add failed: callback=%d added=%d",
++                 err, add.added);
++        free(netif);
++        return ESP_FAIL;
++    }
 +
 @@ -445 +475 @@ static void wg_mgr_task(void *arg) {
 -    ml->wg_netif = netif;
@@ -333,8 +426,13 @@ diff --git a/src/ml_wg_mgr.c b/src/ml_wg_mgr.c
 +    /* Remove from wireguard-lwip */
 @@ -851 +891,0 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
 -    ml->peers[idx].active = false;
-@@ -856,0 +934 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
+@@ -853,5 +931,6 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
+     /* Compact peer_count */
+     while (ml->peer_count > 0 && !ml->peers[ml->peer_count - 1].active) {
+         ml->peer_count--;
+     }
 +    publish_peer_snapshot(ml);
+ }
 @@ -901,3 +980,5 @@ static void process_peer_updates(microlink_t *ml) {
 -                    if (update->has_online) {
 -                        p->online = update->online;
