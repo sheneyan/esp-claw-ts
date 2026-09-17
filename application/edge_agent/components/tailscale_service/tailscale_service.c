@@ -398,7 +398,8 @@ static bool load_rollback_target(tailscale_service_handle_t service,
 }
 
 static void persistence_rollback(tailscale_service_handle_t service,
-                                 tailscale_service_result_t *out)
+                                 tailscale_service_result_t *out,
+                                 bool persistence_unverified)
 {
     tailscale_service_workspace_t *workspace = service->workspace;
     memset(&workspace->runtime, 0, sizeof(workspace->runtime));
@@ -415,11 +416,18 @@ static void persistence_rollback(tailscale_service_handle_t service,
                               rollback_result_is_safe(&workspace->runtime,
                                                       workspace->old_ip);
     if (out->rollback_recovered) {
-        result_error(out, TAILSCALE_SERVICE_PERSISTENCE_FAILED,
-                     "Persistence failed; the previous runtime selection was restored.");
+        if (persistence_unverified) {
+            result_error(out, TAILSCALE_SERVICE_PERSISTENCE_FAILED,
+                         "Persistence unverified; runtime restored, but reboot may use a different Exit Node.");
+        } else {
+            result_error(out, TAILSCALE_SERVICE_PERSISTENCE_FAILED,
+                         "Persistence failed; the previous runtime selection was restored.");
+        }
     } else {
         result_error(out, TAILSCALE_SERVICE_ROLLBACK_FAILED,
-                     "Persistence failed and runtime rollback did not recover.");
+                     persistence_unverified
+                         ? "Persistence unverified and runtime rollback did not recover."
+                         : "Persistence failed and runtime rollback did not recover.");
     }
 }
 
@@ -626,7 +634,8 @@ esp_err_t tailscale_service_set_exit_node(tailscale_service_handle_t service,
     esp_err_t save_err = service->ops.save_persisted_exit(selected_ip,
                                                           service->ops.ctx);
     if (save_err != ESP_OK) {
-        persistence_rollback(service, out);
+        persistence_rollback(service, out,
+                             save_err == ESP_ERR_INVALID_RESPONSE);
         xSemaphoreGive(service->mutation_mutex);
         return ESP_OK;
     }
@@ -682,7 +691,8 @@ esp_err_t tailscale_service_clear_exit_node(tailscale_service_handle_t service,
     }
     esp_err_t save_err = service->ops.save_persisted_exit("", service->ops.ctx);
     if (save_err != ESP_OK) {
-        persistence_rollback(service, out);
+        persistence_rollback(service, out,
+                             save_err == ESP_ERR_INVALID_RESPONSE);
         xSemaphoreGive(service->mutation_mutex);
         return ESP_OK;
     }

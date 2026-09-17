@@ -68,6 +68,8 @@ esp_err_t app_config_init(void);
 void app_config_load_defaults(app_config_t *config);
 esp_err_t app_config_load(app_config_t *config);
 esp_err_t app_config_save(const app_config_t *config);
+/* Saves only ts_exit_node and verifies the persisted readback. */
+esp_err_t app_config_save_tailscale_exit_node(const char *value);
 esp_err_t app_config_validate_wifi(const app_config_t *config, const char **message);
 esp_err_t app_config_validate_tailscale(const app_config_t *config, char *message, size_t message_size);
 void app_config_to_claw(const app_config_t *config, app_claw_config_t *out);

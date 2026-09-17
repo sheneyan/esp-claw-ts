@@ -6,6 +6,7 @@
 #include "settings_store.h"
 
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -162,7 +163,7 @@ static esp_err_t settings_store_validate_string_entries(
     if (!entries || count == 0u) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (count > SETTINGS_STORE_ATOMIC_MAX_ENTRIES) {
+    if (count > SETTINGS_STORE_BATCH_MAX_ENTRIES) {
         return ESP_ERR_INVALID_SIZE;
     }
     for (size_t index = 0u; index < count; ++index) {
@@ -181,7 +182,7 @@ static esp_err_t settings_store_validate_string_entries(
     return ESP_OK;
 }
 
-esp_err_t settings_store_set_strings_atomic(
+esp_err_t settings_store_set_strings_batch(
     const settings_store_string_entry_t *entries, size_t count)
 {
     nvs_handle_t handle;
@@ -232,7 +233,126 @@ esp_err_t settings_store_set_string(const char *key, const char *value)
         .key = key,
         .value = value,
     };
-    return settings_store_set_strings_atomic(&entry, 1u);
+    return settings_store_set_strings_batch(&entry, 1u);
+}
+
+static esp_err_t settings_store_read_allocated(nvs_handle_t handle,
+                                               const char *key,
+                                               char **out,
+                                               bool *exists)
+{
+    size_t required_size = 0u;
+    esp_err_t err;
+
+    *out = NULL;
+    *exists = false;
+    err = nvs_get_str(handle, key, NULL, &required_size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (required_size == 0u) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    *out = malloc(required_size);
+    if (!*out) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = nvs_get_str(handle, key, *out, &required_size);
+    if (err != ESP_OK) {
+        free(*out);
+        *out = NULL;
+        return err;
+    }
+    *exists = true;
+    return ESP_OK;
+}
+
+esp_err_t settings_store_set_string_verified(
+    const char *key, const char *value, settings_store_write_state_t *out_state)
+{
+    const char *requested = value ? value : "";
+    char *old_value = NULL;
+    char *readback = NULL;
+    bool old_exists = false;
+    bool readback_exists = false;
+    nvs_handle_t handle;
+    esp_err_t set_err;
+    esp_err_t err;
+
+    if (out_state) {
+        *out_state = SETTINGS_STORE_WRITE_NOT_APPLIED;
+    }
+    if (!key || key[0] == '\0' || !out_state) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    settings_store_string_entry_t entry = {.key = key, .value = requested};
+    err = settings_store_validate_string_entries(&entry, 1u);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = settings_store_lock();
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = settings_store_check_write_allowed();
+    if (err != ESP_OK) {
+        settings_store_unlock();
+        return err;
+    }
+    err = settings_store_open(NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        settings_store_unlock();
+        return err;
+    }
+    err = settings_store_read_allocated(handle, key, &old_value, &old_exists);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    set_err = nvs_set_str(handle, key, requested);
+    if (set_err == ESP_OK) {
+        err = nvs_commit(handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "nvs_commit failed for key %s: %s",
+                     key, esp_err_to_name(err));
+            *out_state = SETTINGS_STORE_WRITE_UNVERIFIED;
+            err = ESP_ERR_INVALID_RESPONSE;
+            goto done;
+        }
+    } else {
+        ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s", key,
+                 esp_err_to_name(set_err));
+    }
+
+    err = settings_store_read_allocated(handle, key, &readback,
+                                        &readback_exists);
+    if (err != ESP_OK) {
+        *out_state = SETTINGS_STORE_WRITE_UNVERIFIED;
+        err = ESP_ERR_INVALID_RESPONSE;
+        goto done;
+    }
+    if (readback_exists && strcmp(readback, requested) == 0) {
+        *out_state = SETTINGS_STORE_WRITE_APPLIED;
+        err = ESP_OK;
+    } else if (readback_exists == old_exists &&
+               (!old_exists || strcmp(readback, old_value) == 0)) {
+        *out_state = SETTINGS_STORE_WRITE_NOT_APPLIED;
+        err = set_err == ESP_OK ? ESP_FAIL : set_err;
+    } else {
+        *out_state = SETTINGS_STORE_WRITE_UNVERIFIED;
+        err = ESP_ERR_INVALID_RESPONSE;
+    }
+
+done:
+    free(readback);
+    free(old_value);
+    nvs_close(handle);
+    settings_store_unlock();
+    return err;
 }
 
 esp_err_t settings_store_erase_key(const char *key)

@@ -107,6 +107,28 @@ static bool is_cgnat_ipv4(const char *value)
     return parse_ipv4(value, &address) && address >= cgnat_first && address <= cgnat_last;
 }
 
+bool app_config_tailscale_exit_node_validate(const char *value)
+{
+    uint32_t address = 0;
+    char canonical[16];
+
+    if (!value) {
+        return false;
+    }
+    if (value[0] == '\0') {
+        return true;
+    }
+    if (!is_cgnat_ipv4(value) || !parse_ipv4(value, &address)) {
+        return false;
+    }
+    (void)snprintf(canonical, sizeof(canonical), "%u.%u.%u.%u",
+                   (unsigned)((address >> 24) & UINT32_C(0xff)),
+                   (unsigned)((address >> 16) & UINT32_C(0xff)),
+                   (unsigned)((address >> 8) & UINT32_C(0xff)),
+                   (unsigned)(address & UINT32_C(0xff)));
+    return strcmp(value, canonical) == 0;
+}
+
 static bool is_valid_login_server(const char *value)
 {
     const char *authority = value;

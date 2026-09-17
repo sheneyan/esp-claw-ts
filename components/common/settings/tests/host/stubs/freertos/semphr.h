@@ -7,6 +7,8 @@
 
 typedef pthread_mutex_t *SemaphoreHandle_t;
 
+void settings_store_test_before_mutex_take(void);
+
 static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
     SemaphoreHandle_t mutex = malloc(sizeof(*mutex));
@@ -20,6 +22,7 @@ static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 static inline BaseType_t xSemaphoreTake(SemaphoreHandle_t mutex, TickType_t ticks)
 {
     (void)ticks;
+    settings_store_test_before_mutex_take();
     return pthread_mutex_lock(mutex) == 0 ? pdTRUE : 0;
 }
 

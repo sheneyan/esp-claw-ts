@@ -8,6 +8,7 @@ if(CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW)
     list(APPEND EDGE_AGENT_MAIN_SRCS
         "provision_button.c"
         "provision_button_policy.c"
+        "tailscale_persistence.c"
     )
     list(APPEND EDGE_AGENT_MAIN_PRIV_REQUIRES
         cap_tailscale

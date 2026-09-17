@@ -11,3 +11,17 @@ target_include_directories(test_provision_button_policy PRIVATE ../..)
 target_compile_options(test_provision_button_policy PRIVATE -Wall -Wextra -Werror)
 
 add_test(NAME provision_button_policy COMMAND test_provision_button_policy)
+
+add_executable(test_tailscale_persistence
+    test_tailscale_persistence.c
+    ../../tailscale_persistence.c
+)
+target_include_directories(test_tailscale_persistence PRIVATE
+    stubs
+    ../..
+)
+target_compile_features(test_tailscale_persistence PRIVATE c_std_11)
+target_compile_options(test_tailscale_persistence PRIVATE
+    -Wall -Wextra -Werror -UNDEBUG
+)
+add_test(NAME tailscale_persistence COMMAND test_tailscale_persistence)

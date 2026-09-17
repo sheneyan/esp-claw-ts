@@ -75,6 +75,7 @@ typedef struct {
 #define APP_DEFAULT_TAILSCALE_LOGIN_SERVER    ""
 #define APP_DEFAULT_TAILSCALE_EXIT_NODE       ""
 #define APP_DEFAULT_TAILSCALE_MAX_PEERS       "16"
+#define APP_CONFIG_KEY_TAILSCALE_EXIT_NODE    "ts_exit_node"
 
 static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(wifi_ssid, "wifi_ssid", APP_WIFI_SSID),
@@ -115,7 +116,8 @@ static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(tailscale_auth_key, "ts_auth_key", APP_DEFAULT_TAILSCALE_AUTH_KEY),
     APP_CONFIG_FIELD(tailscale_hostname, "ts_hostname", APP_DEFAULT_TAILSCALE_HOSTNAME),
     APP_CONFIG_FIELD(tailscale_login_server, "ts_login", APP_DEFAULT_TAILSCALE_LOGIN_SERVER),
-    APP_CONFIG_FIELD(tailscale_exit_node, "ts_exit_node", APP_DEFAULT_TAILSCALE_EXIT_NODE),
+    APP_CONFIG_FIELD(tailscale_exit_node, APP_CONFIG_KEY_TAILSCALE_EXIT_NODE,
+                     APP_DEFAULT_TAILSCALE_EXIT_NODE),
     APP_CONFIG_FIELD(tailscale_max_peers, "ts_max_peers", APP_DEFAULT_TAILSCALE_MAX_PEERS),
 };
 
@@ -515,9 +517,20 @@ esp_err_t app_config_save(const app_config_t *config)
         entries[i].key = s_fields[i].key;
         entries[i].value = app_config_field_cptr(config, &s_fields[i]);
     }
-    err = settings_store_set_strings_atomic(entries, field_count);
+    err = settings_store_set_strings_batch(entries, field_count);
     free(entries);
     return err;
+}
+
+esp_err_t app_config_save_tailscale_exit_node(const char *value)
+{
+    settings_store_write_state_t write_state;
+
+    if (!app_config_tailscale_exit_node_validate(value)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return settings_store_set_string_verified(
+        APP_CONFIG_KEY_TAILSCALE_EXIT_NODE, value, &write_state);
 }
 
 esp_err_t app_config_validate_wifi(const app_config_t *config, const char **message)

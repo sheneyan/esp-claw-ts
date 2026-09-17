@@ -109,6 +109,33 @@ static void test_exit_node_must_be_cgnat_ipv4(void)
     }
 }
 
+static void test_standalone_exit_node_validation_is_canonical(void)
+{
+    const char *valid[] = {"", "100.64.0.0", "100.127.255.255"};
+    const char *invalid[] = {
+        NULL, "100.064.0.1", "100.64.00.1", "100.64.0.01",
+        "100.63.255.255", "100.128.0.0", "host",
+    };
+
+    for (size_t index = 0u; index < sizeof(valid) / sizeof(valid[0]); ++index) {
+        CHECK(app_config_tailscale_exit_node_validate(valid[index]));
+    }
+    for (size_t index = 0u; index < sizeof(invalid) / sizeof(invalid[0]); ++index) {
+        CHECK(!app_config_tailscale_exit_node_validate(invalid[index]));
+    }
+}
+
+static void test_full_validation_preserves_legacy_exit_node_forms(void)
+{
+    char message[128];
+    app_config_tailscale_view_t config = valid_config();
+
+    config.exit_node = "100.064.0.1";
+    CHECK(validate(&config, message, sizeof(message)));
+    config.exit_node = NULL;
+    CHECK(validate(&config, message, sizeof(message)));
+}
+
 static void test_enabled_hostname_length(void)
 {
     char message[128];
@@ -196,6 +223,8 @@ int main(void)
     test_enabled_token_is_strict();
     test_peer_limits();
     test_exit_node_must_be_cgnat_ipv4();
+    test_standalone_exit_node_validation_is_canonical();
+    test_full_validation_preserves_legacy_exit_node_forms();
     test_enabled_hostname_length();
     test_login_server_supported_forms();
     test_null_fields_are_safe_and_messages_do_not_leak_keys();

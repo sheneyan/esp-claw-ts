@@ -35,6 +35,7 @@
 #include "provision_button.h"
 #include "settings_store.h"
 #include "tailscale_service.h"
+#include "tailscale_persistence.h"
 #include "ts_claw.h"
 #include "lwip/def.h"
 #endif
@@ -458,35 +459,6 @@ static esp_err_t main_tailscale_service_load_persisted_exit(char out[16],
     return err;
 }
 
-static esp_err_t main_tailscale_service_save_persisted_exit(const char *ip,
-                                                            void *ctx)
-{
-    app_config_t *config;
-    esp_err_t err;
-    char validation_message[96] = {0};
-
-    (void)ctx;
-    if (!ip) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    config = calloc(1, sizeof(*config));
-    if (!config) {
-        return ESP_ERR_NO_MEM;
-    }
-    err = app_config_load(config);
-    if (err == ESP_OK) {
-        strlcpy(config->tailscale_exit_node, ip,
-                sizeof(config->tailscale_exit_node));
-        err = app_config_validate_tailscale(config, validation_message,
-                                            sizeof(validation_message));
-    }
-    if (err == ESP_OK) {
-        err = main_save_config(config);
-    }
-    free(config);
-    return err;
-}
-
 static esp_err_t main_cap_tailscale_get_status(cap_tailscale_status_t *out,
                                                void *ctx)
 {
@@ -715,7 +687,7 @@ static esp_err_t main_init_tailscale_capability(void)
         .apply_exit_node = main_tailscale_service_apply_exit_node,
         .rebind = main_tailscale_service_rebind,
         .load_persisted_exit = main_tailscale_service_load_persisted_exit,
-        .save_persisted_exit = main_tailscale_service_save_persisted_exit,
+        .save_persisted_exit = main_tailscale_save_persisted_exit,
         .ctx = NULL,
     };
     esp_err_t err = tailscale_service_create(&service_ops,

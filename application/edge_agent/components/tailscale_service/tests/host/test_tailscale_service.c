@@ -216,13 +216,18 @@ static esp_err_t fake_save_persisted_exit(const char *ip, void *opaque)
 {
     fake_ctx_t *ctx = opaque;
     size_t index = ctx->save_index++;
+    esp_err_t result;
     ++ctx->save_calls;
     append_call(ctx, "save");
     if ((size_t)ctx->save_calls <= ARRAY_SIZE(ctx->saved_values)) {
         (void)snprintf(ctx->saved_values[ctx->save_calls - 1],
                        sizeof(ctx->saved_values[0]), "%s", ip);
     }
-    return index < ctx->save_result_count ? ctx->save_results[index] : ESP_FAIL;
+    result = index < ctx->save_result_count ? ctx->save_results[index] : ESP_FAIL;
+    if (result == ESP_OK || result == ESP_ERR_INVALID_RESPONSE) {
+        (void)snprintf(ctx->persisted, sizeof(ctx->persisted), "%s", ip);
+    }
+    return result;
 }
 
 static tailscale_service_ops_t fake_ops(fake_ctx_t *ctx)
@@ -447,7 +452,38 @@ static void test_persistence_failure_rolls_back(void)
     CHECK(strcmp(result.selected_ip, "100.64.1.1") == 0);
     CHECK(ctx.applied_ips[0] == TEST_IP_BETA);
     CHECK(ctx.applied_ips[1] == TEST_IP_ALPHA);
+    CHECK(strcmp(ctx.saved_values[0], "100.64.1.3") == 0);
+    CHECK(strcmp(ctx.persisted, "100.64.1.1") == 0);
     CHECK(strcmp(ctx.calls, "diag,list,load,apply,save,apply") == 0);
+
+    tailscale_service_delete(service);
+    fake_deinit(&ctx);
+}
+
+static void test_unverified_persistence_reports_reboot_risk(void)
+{
+    fake_ctx_t ctx;
+    tailscale_service_result_t result;
+    fake_init(&ctx);
+    (void)snprintf(ctx.persisted, sizeof(ctx.persisted), "100.64.1.1");
+
+    ctx.save_results[0] = ESP_ERR_INVALID_RESPONSE;
+    ctx.save_result_count = 1u;
+    ctx.apply_results[0] = ESP_OK;
+    ctx.apply_outputs[0] = runtime_set(TEST_IP_BETA);
+    ctx.apply_results[1] = ESP_OK;
+    ctx.apply_outputs[1] = runtime_set(TEST_IP_ALPHA);
+    ctx.apply_result_count = 2u;
+    tailscale_service_handle_t service = make_service(&ctx);
+
+    CHECK(tailscale_service_set_exit_node(service, "beta",
+                                          &result) == ESP_OK);
+    CHECK(result.error == TAILSCALE_SERVICE_PERSISTENCE_FAILED);
+    CHECK(result.rollback_attempted);
+    CHECK(result.rollback_recovered);
+    CHECK(!result.persisted);
+    CHECK(strstr(result.message, "reboot may use a different") != NULL);
+    CHECK(strcmp(ctx.persisted, "100.64.1.3") == 0);
 
     tailscale_service_delete(service);
     fake_deinit(&ctx);
@@ -563,6 +599,7 @@ static void test_reconnect_never_touches_persistence_or_selector(void)
     CHECK(tailscale_service_reconnect(service, &result) == ESP_OK);
     CHECK(result.ok);
     CHECK(result.error == TAILSCALE_SERVICE_OK);
+    CHECK(!result.persisted);
     CHECK(ctx.rebind_calls == 1);
     CHECK(ctx.load_calls == 0);
     CHECK(ctx.save_calls == 0);
@@ -573,12 +610,14 @@ static void test_reconnect_never_touches_persistence_or_selector(void)
     ctx.rebind_result = ESP_FAIL;
     CHECK(tailscale_service_reconnect(service, &result) == ESP_OK);
     CHECK(result.error == TAILSCALE_SERVICE_RECONNECT_FAILED);
+    CHECK(!result.persisted);
     CHECK(ctx.rebind_calls == 2);
 
     memset(ctx.calls, 0, sizeof(ctx.calls));
     ctx.diagnostics.status.enabled = false;
     CHECK(tailscale_service_reconnect(service, &result) == ESP_OK);
     CHECK(result.error == TAILSCALE_SERVICE_NOT_ENABLED);
+    CHECK(!result.persisted);
     CHECK(strcmp(ctx.calls, "diag") == 0);
 
     tailscale_service_delete(service);
@@ -748,6 +787,7 @@ int main(void)
     test_runtime_failure_never_saves();
     test_inconsistent_runtime_success_never_saves();
     test_persistence_failure_rolls_back();
+    test_unverified_persistence_reports_reboot_risk();
     test_persistence_and_rollback_failure();
     test_invalid_or_unavailable_persistence_aborts_before_apply();
     test_clear_only_persists_proven_sta_result();

@@ -39,6 +39,7 @@ typedef struct {
     esp_err_t (*apply_exit_node)(uint32_t ip, ts_claw_runtime_result_t *out, void *ctx);
     esp_err_t (*rebind)(void *ctx);
     esp_err_t (*load_persisted_exit)(char out[16], void *ctx);
+    /* Return ESP_ERR_INVALID_RESPONSE when the final persisted value is unknown. */
     esp_err_t (*save_persisted_exit)(const char *ip, void *ctx);
     void *ctx;
 } tailscale_service_ops_t;
