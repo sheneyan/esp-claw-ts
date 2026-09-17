@@ -3,10 +3,30 @@ cmake_minimum_required(VERSION 3.16)
 include("${CMAKE_SOURCE_DIR}/tools/cmake/esp_idf_patch.cmake")
 include("${CMAKE_SOURCE_DIR}/tools/cmake/flash_partition_defaults.cmake")
 
-list(APPEND EXTRA_COMPONENT_DIRS
-    "${CMAKE_SOURCE_DIR}/third_party/microlink/components/microlink"
-    "${CMAKE_SOURCE_DIR}/third_party/microlink/components/microlink/components/wireguard_lwip"
-)
+set(EDGE_AGENT_BOARD_DEFAULTS_FILE "${CMAKE_SOURCE_DIR}/components/gen_bmgr_codes/board_manager.defaults")
+set(EDGE_AGENT_TS_CLAW_BOARD_CONFIG "")
+if(EXISTS "${EDGE_AGENT_BOARD_DEFAULTS_FILE}")
+    file(STRINGS "${EDGE_AGENT_BOARD_DEFAULTS_FILE}" EDGE_AGENT_TS_CLAW_BOARD_CONFIG
+        REGEX "^CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW=y$"
+    )
+endif()
+
+if(EDGE_AGENT_TS_CLAW_BOARD_CONFIG)
+    set(EDGE_AGENT_MICROLINK_COMPONENT_DIR "${CMAKE_SOURCE_DIR}/third_party/microlink/components/microlink")
+    set(EDGE_AGENT_WIREGUARD_COMPONENT_DIR "${EDGE_AGENT_MICROLINK_COMPONENT_DIR}/components/wireguard_lwip")
+
+    if(NOT EXISTS "${EDGE_AGENT_MICROLINK_COMPONENT_DIR}/CMakeLists.txt" OR
+       NOT EXISTS "${EDGE_AGENT_WIREGUARD_COMPONENT_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "TS-Claw requires the MicroLink submodule. Run: git submodule update --init --recursive"
+        )
+    endif()
+
+    list(APPEND EXTRA_COMPONENT_DIRS
+        "${EDGE_AGENT_MICROLINK_COMPONENT_DIR}"
+        "${EDGE_AGENT_WIREGUARD_COMPONENT_DIR}"
+    )
+endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(edge_agent VERSION 0.1.0)

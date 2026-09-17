@@ -20,6 +20,7 @@ workflow:
 
 variables:
   IOT_SOLUTION_PATH: "$CI_PROJECT_DIR"
+  GIT_SUBMODULE_STRATEGY: recursive
 
 include:
   - '.gitlab/ci/rules.yml'
