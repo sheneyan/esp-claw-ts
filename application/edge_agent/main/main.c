@@ -343,6 +343,18 @@ static const char *main_tailscale_exit_state_name(ts_exit_state_t state)
     }
 }
 
+static void main_format_host_order_ipv4(uint32_t ip, char *out, size_t capacity)
+{
+    if (capacity == 0u) {
+        return;
+    }
+    snprintf(out, capacity, "%u.%u.%u.%u",
+             (unsigned)((ip >> 24) & 0xFFu),
+             (unsigned)((ip >> 16) & 0xFFu),
+             (unsigned)((ip >> 8) & 0xFFu),
+             (unsigned)(ip & 0xFFu));
+}
+
 static esp_err_t main_get_tailscale_status(http_server_tailscale_status_t *status)
 {
     ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "status is NULL");
@@ -363,7 +375,8 @@ static esp_err_t main_get_tailscale_status(http_server_tailscale_status_t *statu
     status->connected = snapshot->connected;
     status->auth_key_set = snapshot->auth_key_set;
     if (snapshot->vpn_ip != 0u) {
-        microlink_ip_to_str(snapshot->vpn_ip, status->vpn_ip);
+        main_format_host_order_ipv4(snapshot->vpn_ip, status->vpn_ip,
+                                    sizeof(status->vpn_ip));
     } else {
         strlcpy(status->vpn_ip, "0.0.0.0", sizeof(status->vpn_ip));
     }
@@ -374,7 +387,8 @@ static esp_err_t main_get_tailscale_status(http_server_tailscale_status_t *statu
     status->peer_count = snapshot->peer_count;
     status->peer_online = snapshot->peer_online;
     if (snapshot->exit_node_ip != 0u) {
-        microlink_ip_to_str(snapshot->exit_node_ip, status->exit_node);
+        main_format_host_order_ipv4(snapshot->exit_node_ip, status->exit_node,
+                                    sizeof(status->exit_node));
     }
     strlcpy(status->exit_state, main_tailscale_exit_state_name(snapshot->exit_state),
             sizeof(status->exit_state));
@@ -397,21 +411,22 @@ static int main_get_tailscale_exit_nodes(http_server_tailscale_exit_node_t *node
         return 0;
     }
 
-    microlink_peer_info_t *peers = calloc((size_t)capacity, sizeof(*peers));
+    ts_claw_peer_t *peers = calloc((size_t)capacity, sizeof(*peers));
     if (!peers) {
         return -ESP_ERR_NO_MEM;
     }
 
-    int count = ts_claw_get_exit_nodes(peers, capacity);
+    int count = ts_claw_list_exit_nodes(peers, (size_t)capacity);
     if (count >= 0) {
         if (count > capacity) {
             count = -ESP_ERR_INVALID_SIZE;
         } else {
             for (int i = 0; i < count; ++i) {
-                microlink_ip_to_str(peers[i].vpn_ip, nodes[i].ip);
+                main_format_host_order_ipv4(peers[i].vpn_ip, nodes[i].ip,
+                                            sizeof(nodes[i].ip));
                 strlcpy(nodes[i].hostname, peers[i].hostname, sizeof(nodes[i].hostname));
                 nodes[i].online = peers[i].online;
-                nodes[i].direct = peers[i].direct_path;
+                nodes[i].direct = peers[i].direct;
                 nodes[i].derp_region = peers[i].derp_region;
             }
         }
