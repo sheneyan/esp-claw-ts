@@ -45,6 +45,9 @@ typedef struct {
 #define HTTP_SERVER_TAILSCALE_STATE_LEN          16
 #define HTTP_SERVER_TAILSCALE_LAST_ERROR_LEN     96
 #define HTTP_SERVER_TAILSCALE_MAX_EXIT_NODES     64
+#define HTTP_SERVER_TAILSCALE_ERROR_LEN           32
+#define HTTP_SERVER_TAILSCALE_MESSAGE_LEN         96
+#define HTTP_SERVER_TAILSCALE_SELECTOR_LEN        96
 
 typedef struct {
     bool enabled;
@@ -72,6 +75,19 @@ typedef struct {
 } http_server_tailscale_exit_node_t;
 
 typedef struct {
+    bool ok;
+    char error[HTTP_SERVER_TAILSCALE_ERROR_LEN];
+    char message[HTTP_SERVER_TAILSCALE_MESSAGE_LEN];
+    char selected_ip[HTTP_SERVER_TAILSCALE_IP_LEN];
+    char selected_hostname[HTTP_SERVER_TAILSCALE_SELECTOR_LEN];
+    char exit_state[HTTP_SERVER_TAILSCALE_STATE_LEN];
+    char egress[HTTP_SERVER_TAILSCALE_STATE_LEN];
+    bool persisted;
+    bool rollback_attempted;
+    bool rollback_recovered;
+} http_server_tailscale_operation_t;
+
+typedef struct {
     esp_err_t (*load_config)(app_config_t *config);
     esp_err_t (*save_config)(const app_config_t *before,
                              const app_config_t *after);
@@ -84,6 +100,16 @@ typedef struct {
     esp_err_t (*get_tailscale_status)(http_server_tailscale_status_t *status);
     /* Returns the number of copied entries, or a negative esp_err_t value. */
     int (*get_tailscale_exit_nodes)(http_server_tailscale_exit_node_t *nodes, int capacity);
+    /*
+     * The server zero-initializes the caller-owned output before invoking one
+     * of these callbacks. Implementations must copy all result text into the
+     * bounded fields; the output contains no borrowed pointers and remains
+     * valid until the caller reuses or releases its enclosing storage.
+     */
+    esp_err_t (*set_tailscale_exit_node)(const char *selector,
+                                         http_server_tailscale_operation_t *out);
+    esp_err_t (*clear_tailscale_exit_node)(http_server_tailscale_operation_t *out);
+    esp_err_t (*reconnect_tailscale)(http_server_tailscale_operation_t *out);
 } http_server_services_t;
 
 typedef struct {

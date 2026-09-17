@@ -580,6 +580,103 @@ static void main_cap_tailscale_copy_mutation(
     destination->persisted = source->persisted;
 }
 
+static void main_http_tailscale_copy_operation(
+    const tailscale_service_result_t *source,
+    http_server_tailscale_operation_t *destination)
+{
+    memset(destination, 0, sizeof(*destination));
+    destination->ok = source->ok;
+    strlcpy(destination->error, tailscale_service_error_name(source->error),
+            sizeof(destination->error));
+    strlcpy(destination->message, source->message,
+            sizeof(destination->message));
+    strlcpy(destination->selected_ip, source->selected_ip,
+            sizeof(destination->selected_ip));
+    strlcpy(destination->selected_hostname, source->selected_hostname,
+            sizeof(destination->selected_hostname));
+    strlcpy(destination->exit_state,
+            main_tailscale_exit_state_name(source->exit_state),
+            sizeof(destination->exit_state));
+    strlcpy(destination->egress, source->egress,
+            sizeof(destination->egress));
+    destination->persisted = source->persisted;
+    destination->rollback_attempted = source->rollback_attempted;
+    destination->rollback_recovered = source->rollback_recovered;
+}
+
+static esp_err_t main_http_tailscale_set_exit_node(
+    const char *selector, http_server_tailscale_operation_t *out)
+{
+    tailscale_service_result_t *result;
+    esp_err_t err;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!s_tailscale_service || !selector || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_set_exit_node(s_tailscale_service, selector, result);
+    if (err == ESP_OK) {
+        main_http_tailscale_copy_operation(result, out);
+    }
+    free(result);
+    return err;
+}
+
+static esp_err_t main_http_tailscale_clear_exit_node(
+    http_server_tailscale_operation_t *out)
+{
+    tailscale_service_result_t *result;
+    esp_err_t err;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!s_tailscale_service || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_clear_exit_node(s_tailscale_service, result);
+    if (err == ESP_OK) {
+        main_http_tailscale_copy_operation(result, out);
+    }
+    free(result);
+    return err;
+}
+
+static esp_err_t main_http_tailscale_reconnect(
+    http_server_tailscale_operation_t *out)
+{
+    tailscale_service_result_t *result;
+    esp_err_t err;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!s_tailscale_service || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result = calloc(1, sizeof(*result));
+    if (!result) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = tailscale_service_reconnect(s_tailscale_service, result);
+    if (err == ESP_OK) {
+        main_http_tailscale_copy_operation(result, out);
+        out->persisted = false;
+    }
+    free(result);
+    return err;
+}
+
 static esp_err_t main_cap_tailscale_set_exit_node(
     const char *selector, cap_tailscale_mutation_result_t *out, void *ctx)
 {
@@ -938,6 +1035,9 @@ void app_main(void)
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
             .get_tailscale_status = main_get_tailscale_status,
             .get_tailscale_exit_nodes = main_get_tailscale_exit_nodes,
+            .set_tailscale_exit_node = main_http_tailscale_set_exit_node,
+            .clear_tailscale_exit_node = main_http_tailscale_clear_exit_node,
+            .reconnect_tailscale = main_http_tailscale_reconnect,
 #endif
         },
     }));
