@@ -18,11 +18,23 @@ void ts_claw_route_hook_reset(void)
 void ts_claw_route_hook_set_netifs(struct netif *sta_netif, struct netif *wg_netif)
 {
     portENTER_CRITICAL(&s_route_lock);
+    if (s_route_state.probe_active && s_route_state.wg_netif != NULL &&
+        wg_netif != s_route_state.wg_netif) {
+        portEXIT_CRITICAL(&s_route_lock);
+        return;
+    }
     s_route_state.sta_netif = sta_netif;
     s_route_state.wg_netif = wg_netif;
     if (sta_netif == NULL || wg_netif == NULL) {
         s_route_state.exit_active = false;
     }
+    portEXIT_CRITICAL(&s_route_lock);
+}
+
+void ts_claw_route_hook_set_probe_active(bool active)
+{
+    portENTER_CRITICAL(&s_route_lock);
+    s_route_state.probe_active = active;
     portEXIT_CRITICAL(&s_route_lock);
 }
 

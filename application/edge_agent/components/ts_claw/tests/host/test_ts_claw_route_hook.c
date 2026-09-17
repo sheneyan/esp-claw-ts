@@ -108,11 +108,33 @@ static void test_null_destination_delegates_to_lwip(void)
     TEST_CHECK(s_real_hook_calls == 1u);
 }
 
+static void test_active_probe_keeps_cgnat_fail_closed_during_wg_loss(void)
+{
+    const ip4_addr_t cgnat_peer = network_address(0x6457967Au);
+
+    ts_claw_route_hook_reset();
+    ts_claw_route_hook_set_netifs(&s_sta_netif, &s_wg_netif);
+    ts_claw_route_hook_set_tunnel_available(true);
+    ts_claw_route_hook_set_upstream_pinned(true);
+    ts_claw_route_hook_set_probe_active(true);
+
+    /* A disappearing WG netif must not let the unbound probe fall via STA. */
+    ts_claw_route_hook_set_netifs(&s_sta_netif, NULL);
+    ts_claw_route_hook_set_tunnel_available(false);
+    TEST_CHECK(__wrap_ip4_route_src_hook(NULL, &cgnat_peer) == &s_wg_netif);
+
+    /* Only a fully retired probe permits clearing the WG route state. */
+    ts_claw_route_hook_set_probe_active(false);
+    ts_claw_route_hook_set_netifs(&s_sta_netif, NULL);
+    TEST_CHECK(__wrap_ip4_route_src_hook(NULL, &cgnat_peer) == &s_default_netif);
+}
+
 int main(void)
 {
     test_loopback_delegates_to_lwip();
     test_existing_route_targets_are_preserved();
     test_null_destination_delegates_to_lwip();
+    test_active_probe_keeps_cgnat_fail_closed_during_wg_loss();
 
     puts("ts_claw_route_hook: all tests passed");
     return 0;

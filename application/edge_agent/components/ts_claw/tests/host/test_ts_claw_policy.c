@@ -22,16 +22,6 @@ static void test_route_classification(void)
     TEST_CHECK(ts_route_classify(0x08080808u, true) == TS_ROUTE_WG);
 }
 
-static void test_exit_probe_relies_on_cgnat_route_hook(void)
-{
-    /*
-     * The ESP-IDF raw ICMP socket cannot be SO_BINDTODEVICE-bound to the
-     * custom WireGuard netif.  The CGNAT route hook is the supported path.
-     */
-    TEST_CHECK(ts_exit_probe_interface_binding() == 0u);
-    TEST_CHECK(ts_route_classify(0x64683E38u, false) == TS_ROUTE_WG);
-}
-
 static void test_cgnat_boundaries(void)
 {
     TEST_CHECK(!ts_route_is_cgnat(0x643FFFFFu));
@@ -346,7 +336,6 @@ static void test_start_retry_waits_thirty_seconds(void)
 int main(void)
 {
     test_route_classification();
-    test_exit_probe_relies_on_cgnat_route_hook();
     test_cgnat_boundaries();
     test_rfc1918_boundaries();
     test_loopback_delegates_and_link_local_stays_on_sta();
