@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "cmd_wifi.h"
+#include "cmd_wifi_config_update.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -192,54 +193,55 @@ static int cmd_wifi_apply(void)
     return ret;
 }
 
+static int cmd_wifi_config_apply(const app_config_t *config, void *ctx)
+{
+    (void)ctx;
+    return cmd_wifi_apply_loaded_config(config, "set");
+}
+
+static void cmd_wifi_config_saved(const app_config_t *config, void *ctx)
+{
+    (void)ctx;
+    /* ssid last to tolerate spaces */
+    ESP_LOGI(TAG, "cmd=set ok=1 msg=config_saved applied=0 ssid=%s",
+             config->wifi_ssid);
+}
+
 static int cmd_wifi_set(bool apply_now)
 {
-    app_config_t *config = calloc(1, sizeof(*config));
-    esp_err_t err;
-    int ret;
+    cmd_wifi_config_update_result_t result;
+    esp_err_t err = cmd_wifi_config_update(
+        wifi_args.ssid->count ? wifi_args.ssid->sval[0] : NULL,
+        wifi_args.password->count ? wifi_args.password->sval[0] : NULL,
+        wifi_args.password->count > 0,
+        apply_now,
+        cmd_wifi_config_apply,
+        cmd_wifi_config_saved,
+        NULL,
+        &result);
 
-    if (!config) {
-        return log_error("set", ESP_ERR_NO_MEM, "failed_to_allocate_config");
-    }
-    err = app_config_load(config);
-    if (err != ESP_OK) {
-        free(config);
+    switch (result.outcome) {
+    case CMD_WIFI_CONFIG_UPDATE_COMPLETE:
+        return 0;
+    case CMD_WIFI_CONFIG_UPDATE_ALLOCATION_FAILED:
+        return log_error("set", err, "failed_to_allocate_config");
+    case CMD_WIFI_CONFIG_UPDATE_LOAD_FAILED:
         return log_error("set", err, "failed_to_load_saved_config");
-    }
-
-    if (!wifi_args.ssid->count) {
-        free(config);
-        return log_error("set", ESP_ERR_INVALID_ARG, "missing_ssid");
-    }
-
-    strlcpy(config->wifi_ssid, wifi_args.ssid->sval[0], sizeof(config->wifi_ssid));
-    if (wifi_args.password->count) {
-        strlcpy(config->wifi_password, wifi_args.password->sval[0], sizeof(config->wifi_password));
-    }
-
-    const char *validation_message = NULL;
-    err = app_config_validate_wifi(config, &validation_message);
-    if (err != ESP_OK) {
-        free(config);
-        return log_error("set", err, validation_message ? validation_message : "invalid_ap_config");
-    }
-
-    err = app_config_save(config);
-    if (err != ESP_OK) {
-        free(config);
+    case CMD_WIFI_CONFIG_UPDATE_MISSING_SSID:
+        return log_error("set", err, "missing_ssid");
+    case CMD_WIFI_CONFIG_UPDATE_VALIDATION_FAILED:
+        return log_error("set", err,
+                         result.validation_message[0] ?
+                         result.validation_message : "invalid_ap_config");
+    case CMD_WIFI_CONFIG_UPDATE_SAVE_FAILED:
         return log_error("set", err, "failed_to_save_config");
+    case CMD_WIFI_CONFIG_UPDATE_APPLY_FAILED:
+        return result.apply_result;
+    case CMD_WIFI_CONFIG_UPDATE_INVALID_ARGUMENT:
+    case CMD_WIFI_CONFIG_UPDATE_NONE:
+    default:
+        return log_error("set", ESP_ERR_INVALID_ARG, "invalid_update_state");
     }
-
-    if (apply_now) {
-        ret = cmd_wifi_apply_loaded_config(config, "set");
-        free(config);
-        return ret;
-    }
-
-    /* ssid last to tolerate spaces */
-    ESP_LOGI(TAG, "cmd=set ok=1 msg=config_saved applied=0 ssid=%s", config->wifi_ssid);
-    free(config);
-    return 0;
 }
 
 static int wifi_func(int argc, char **argv)

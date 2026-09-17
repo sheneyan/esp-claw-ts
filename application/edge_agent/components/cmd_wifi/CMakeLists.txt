@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "cmd_wifi.c"
+        "cmd_wifi_config_update.c"
     INCLUDE_DIRS
         "."
     PRIV_REQUIRES
