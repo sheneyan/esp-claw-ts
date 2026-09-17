@@ -18,6 +18,50 @@ static bool address_matches(uint32_t host_order_ip, uint32_t network, uint32_t m
     return (host_order_ip & mask) == network;
 }
 
+typedef struct {
+    uint32_t network;
+    uint32_t mask;
+} ts_ipv4_range_t;
+
+/*
+ * IANA IPv4 Special-Purpose Address Registry entries modeled here with
+ * Globally Reachable = True. These must win over broader exclusions below.
+ */
+static const ts_ipv4_range_t s_iana_global_special_ranges[] = {
+    {0xC0000009u, 0xFFFFFFFFu}, /* 192.0.0.9/32: PCP anycast. */
+    {0xC000000Au, 0xFFFFFFFFu}, /* 192.0.0.10/32: TURN anycast. */
+    {0xC01FC400u, 0xFFFFFF00u}, /* 192.31.196.0/24: AS112-v4. */
+    {0xC034C100u, 0xFFFFFF00u}, /* 192.52.193.0/24: AMT. */
+    {0xC0AF3000u, 0xFFFFFF00u}, /* 192.175.48.0/24: AS112 direct. */
+};
+
+/*
+ * IANA special-purpose ranges modeled here with Globally Reachable = False.
+ * 224/3 combines the IPv4 multicast 224/4 and reserved 240/4 blocks.
+ */
+static const ts_ipv4_range_t s_iana_non_global_ranges[] = {
+    {0x00000000u, 0xFF000000u}, /* 0.0.0.0/8: this network. */
+    {0xC0000000u, 0xFFFFFF00u}, /* 192.0.0.0/24: IETF protocol assignments. */
+    {0xC0000200u, 0xFFFFFF00u}, /* 192.0.2.0/24: TEST-NET-1. */
+    {0xC0586300u, 0xFFFFFF00u}, /* 192.88.99.0/24: deprecated 6to4 relay. */
+    {0xC6120000u, 0xFFFE0000u}, /* 198.18.0.0/15: benchmarking. */
+    {0xC6336400u, 0xFFFFFF00u}, /* 198.51.100.0/24: TEST-NET-2. */
+    {0xCB007100u, 0xFFFFFF00u}, /* 203.0.113.0/24: TEST-NET-3. */
+    {0xE0000000u, 0xE0000000u}, /* 224.0.0.0/3: multicast and reserved. */
+};
+
+static bool address_matches_any(uint32_t host_order_ip,
+                                const ts_ipv4_range_t *ranges,
+                                size_t range_count)
+{
+    for (size_t i = 0; i < range_count; ++i) {
+        if (address_matches(host_order_ip, ranges[i].network, ranges[i].mask)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ts_exit_policy_init(ts_exit_policy_t *policy, bool configured)
 {
     if (policy == NULL) {
@@ -108,16 +152,20 @@ bool ts_route_is_local_bypass(uint32_t host_order_ip)
 
 bool ts_route_is_public_unicast(uint32_t host_order_ip)
 {
-    return !ts_route_is_cgnat(host_order_ip) &&
-           !ts_route_is_local_bypass(host_order_ip) &&
-           !address_matches(host_order_ip, 0x00000000u, 0xFF000000u) &&
-           !address_matches(host_order_ip, 0xC0000000u, 0xFFFFFF00u) &&
-           !address_matches(host_order_ip, 0xC0000200u, 0xFFFFFF00u) &&
-           !address_matches(host_order_ip, 0xC0586300u, 0xFFFFFF00u) &&
-           !address_matches(host_order_ip, 0xC6120000u, 0xFFFE0000u) &&
-           !address_matches(host_order_ip, 0xC6336400u, 0xFFFFFF00u) &&
-           !address_matches(host_order_ip, 0xCB007100u, 0xFFFFFF00u) &&
-           !address_matches(host_order_ip, 0xE0000000u, 0xE0000000u);
+    if (ts_route_is_cgnat(host_order_ip) ||
+        ts_route_is_local_bypass(host_order_ip)) {
+        return false;
+    }
+
+    if (address_matches_any(host_order_ip, s_iana_global_special_ranges,
+                            sizeof(s_iana_global_special_ranges) /
+                                sizeof(s_iana_global_special_ranges[0]))) {
+        return true;
+    }
+
+    return !address_matches_any(host_order_ip, s_iana_non_global_ranges,
+                                sizeof(s_iana_non_global_ranges) /
+                                    sizeof(s_iana_non_global_ranges[0]));
 }
 
 ts_route_target_t ts_route_classify(uint32_t host_order_ip, bool exit_active)

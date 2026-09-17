@@ -76,12 +76,22 @@ static void test_non_public_special_ranges_use_default_route(void)
 
     TEST_CHECK(ts_route_classify(0xBFFFFFFFu, true) == TS_ROUTE_WG);
     TEST_CHECK(ts_route_classify(0xC0000000u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC0000008u, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC0000009u, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC000000Au, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC000000Bu, true) == TS_ROUTE_DEFAULT);
     TEST_CHECK(ts_route_classify(0xC00000FFu, true) == TS_ROUTE_DEFAULT);
     TEST_CHECK(ts_route_classify(0xC0000100u, true) == TS_ROUTE_WG);
     TEST_CHECK(ts_route_classify(0xC0000200u, true) == TS_ROUTE_DEFAULT);
     TEST_CHECK(ts_route_classify(0xC00002FFu, true) == TS_ROUTE_DEFAULT);
     TEST_CHECK(ts_route_classify(0xC0586300u, true) == TS_ROUTE_DEFAULT);
     TEST_CHECK(ts_route_classify(0xC05863FFu, true) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC01FC400u, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC01FC4FFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC034C100u, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC034C1FFu, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC0AF3000u, true) == TS_ROUTE_WG);
+    TEST_CHECK(ts_route_classify(0xC0AF30FFu, true) == TS_ROUTE_WG);
 
     TEST_CHECK(ts_route_classify(0xC611FFFFu, true) == TS_ROUTE_WG);
     TEST_CHECK(ts_route_classify(0xC6120000u, true) == TS_ROUTE_DEFAULT);
@@ -99,6 +109,7 @@ static void test_non_public_special_ranges_use_default_route(void)
     TEST_CHECK(ts_route_classify(0xFFFFFFFFu, true) == TS_ROUTE_DEFAULT);
 
     TEST_CHECK(ts_route_classify(0xC0000201u, false) == TS_ROUTE_DEFAULT);
+    TEST_CHECK(ts_route_classify(0xC0000009u, false) == TS_ROUTE_STA);
     TEST_CHECK(ts_route_classify(0x08080808u, false) == TS_ROUTE_STA);
 }
 
