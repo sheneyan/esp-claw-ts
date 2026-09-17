@@ -84,8 +84,30 @@ diff --git a/src/microlink.c b/src/microlink.c
 +        free(ml);
 +        return NULL;
 +    }
-@@ -340,0 +350 @@ microlink_t *microlink_init(const microlink_config_t *config) {
+@@ -220,4 +229,5 @@ microlink_t *microlink_init(const microlink_config_t *config) {
+     if (load_or_generate_keys(ml) != ESP_OK) {
 +        vSemaphoreDelete(ml->peer_snapshot_lock);
+         free(ml);
+         return NULL;
+     }
+@@ -340,5 +349,6 @@ microlink_t *microlink_init(const microlink_config_t *config) {
+     if (!ml->events) {
+         ESP_LOGE(TAG, "Failed to create event group");
++        vSemaphoreDelete(ml->peer_snapshot_lock);
+         free(ml);
+         return NULL;
+     }
+@@ -553,7 +564,8 @@ esp_err_t microlink_stop(microlink_t *ml) {
+             ESP_LOGE(TAG, "%d task(s) still running %d ms after the stop request -- "
+                           "the instance will be leaked rather than freed under them", left, waited);
+             ml->stop_incomplete = true;
+-        } else {
+-            ESP_LOGI(TAG, "All tasks exited (%d ms)", waited);
++            return ESP_ERR_TIMEOUT;
+         }
++        ml->stop_incomplete = false;
++        ESP_LOGI(TAG, "All tasks exited (%d ms)", waited);
+     }
 @@ -642,0 +653,2 @@ void microlink_destroy(microlink_t *ml) {
 +
 +    if (ml->peer_snapshot_lock) vSemaphoreDelete(ml->peer_snapshot_lock);

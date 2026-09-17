@@ -95,6 +95,8 @@ static const char *TAG = "ts_claw";
 static ts_claw_context_t s_ts;
 
 static esp_err_t send_sync_event(ts_event_t *event);
+static void worker_schedule_destroy_retry(ts_destroy_retry_mode_t mode,
+                                          uint64_t current_ms);
 
 static uint64_t now_ms(void)
 {
@@ -325,6 +327,7 @@ static esp_err_t worker_destroy_microlink(void)
     if (err != ESP_OK) {
         set_last_error("microlink stop failed");
         ESP_LOGE(TAG, "microlink_stop failed: %s", esp_err_to_name(err));
+        return err;
     }
     microlink_set_state_callback(ml, NULL, NULL);
     microlink_destroy(ml);
@@ -368,7 +371,9 @@ static esp_err_t worker_start_microlink(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         set_last_error("wireguard upstream preset failed");
         ESP_LOGE(TAG, "microlink upstream preset failed: %s", esp_err_to_name(err));
-        (void)worker_destroy_microlink();
+        if (worker_destroy_microlink() != ESP_OK) {
+            worker_schedule_destroy_retry(TS_DESTROY_RETRY_RESTART, now_ms());
+        }
         return err;
     }
 
@@ -377,7 +382,9 @@ static esp_err_t worker_start_microlink(void)
     if (err != ESP_OK) {
         set_last_error("microlink start failed");
         ESP_LOGE(TAG, "microlink_start failed: %s", esp_err_to_name(err));
-        (void)worker_destroy_microlink();
+        if (worker_destroy_microlink() != ESP_OK) {
+            worker_schedule_destroy_retry(TS_DESTROY_RETRY_RESTART, now_ms());
+        }
         return err;
     }
 

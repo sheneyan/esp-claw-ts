@@ -19,7 +19,7 @@ set(_MICROLINK_PATCHED_STUN_SHA256
 set(_MICROLINK_PATCHED_COORD_SHA256
     "14148660f23e76ef5ea7a16d571d3620cb71c08b9f1649007a35fda9e97bc5fd")
 set(_MICROLINK_PATCHED_CORE_SHA256
-    "e27a86c57d7a63e1468c7dea93e5810c1b0dd95b1f7c86a2e1e107570154f727")
+    "543abb26b4cb34819ddd19e136beec59efe30ef7defd7b6468033b886da95b21")
 set(_MICROLINK_PATCHED_PEER_NVS_SHA256
     "7388ac0b2cabf84f91645716fcc443e9ecf8685e07bbdd5a01c24b54eb505fb5")
 set(_MICROLINK_PATCHED_WG_MGR_SHA256
@@ -213,6 +213,24 @@ function(_microlink_assert_upstream_bind_patch source_dir)
                 "MicroLink patched copy is missing peer snapshot reader/lifecycle marker: ${_snapshot_reader_marker}")
         endif()
     endforeach()
+    string(FIND "${_core_source}" "Load or generate persistent keys"
+        _key_load_failure_offset)
+    if(_key_load_failure_offset EQUAL -1)
+        message(FATAL_ERROR
+            "MicroLink patched copy is missing the key-load failure path: ${source_dir}")
+    endif()
+    string(SUBSTRING "${_core_source}" ${_key_load_failure_offset} 384
+        _key_load_failure_block)
+    string(FIND "${_key_load_failure_block}"
+        "vSemaphoreDelete(ml->peer_snapshot_lock);" _key_load_snapshot_delete_offset)
+    string(FIND "${_key_load_failure_block}" "free(ml);"
+        _key_load_context_free_offset)
+    if(_key_load_snapshot_delete_offset EQUAL -1 OR
+       _key_load_context_free_offset EQUAL -1 OR
+       _key_load_snapshot_delete_offset GREATER _key_load_context_free_offset)
+        message(FATAL_ERROR
+            "MicroLink patched copy must delete the peer snapshot lock before freeing the context after key-load failure: ${source_dir}")
+    endif()
     string(FIND "${_core_source}" "Failed to create event group"
         _event_failure_offset)
     if(_event_failure_offset EQUAL -1)
@@ -228,6 +246,29 @@ function(_microlink_assert_upstream_bind_patch source_dir)
        _snapshot_delete_offset GREATER _context_free_offset)
         message(FATAL_ERROR
             "MicroLink patched copy must delete the peer snapshot lock before freeing its context: ${source_dir}")
+    endif()
+    string(FIND "${_core_source}"
+        "int left = __atomic_load_n(&ml->tasks_alive, __ATOMIC_SEQ_CST);"
+        _stop_wait_result_offset)
+    if(_stop_wait_result_offset EQUAL -1)
+        message(FATAL_ERROR
+            "MicroLink patched copy is missing the stop task-wait result: ${source_dir}")
+    endif()
+    string(SUBSTRING "${_core_source}" ${_stop_wait_result_offset} 768
+        _stop_wait_result_block)
+    string(FIND "${_stop_wait_result_block}" "ml->stop_incomplete = true;"
+        _stop_incomplete_set_offset)
+    string(FIND "${_stop_wait_result_block}" "return ESP_ERR_TIMEOUT;"
+        _stop_timeout_return_offset)
+    string(FIND "${_stop_wait_result_block}" "ml->stop_incomplete = false;"
+        _stop_incomplete_clear_offset)
+    if(_stop_incomplete_set_offset EQUAL -1 OR
+       _stop_timeout_return_offset EQUAL -1 OR
+       _stop_incomplete_clear_offset EQUAL -1 OR
+       _stop_incomplete_set_offset GREATER _stop_timeout_return_offset OR
+       _stop_timeout_return_offset GREATER _stop_incomplete_clear_offset)
+        message(FATAL_ERROR
+            "MicroLink patched stop must return timeout for live tasks and clear stop_incomplete after a completed retry: ${source_dir}")
     endif()
     foreach(_reset_marker IN ITEMS
             "esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);"
