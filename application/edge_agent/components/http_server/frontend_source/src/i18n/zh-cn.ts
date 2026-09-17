@@ -127,6 +127,7 @@ export const zhCn: Dict = {
   tailscaleExitNodeHint: '该节点不可用时，设备会回退到普通 Wi-Fi 网络。',
   tailscaleExitNodeNone: '不使用（走普通 Wi-Fi）',
   tailscaleExitNodeUnavailable: '当前不可用',
+  tailscaleExitNodeEmpty: '当前没有可用的 Exit Node。',
   tailscaleExitNodeSwitching: '正在切换 Exit Node…',
   tailscaleRollbackRecovered: '已恢复先前的 Exit Node。',
   tailscaleRollbackFailed: '回滚失败，请检查当前网络路由。',

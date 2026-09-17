@@ -97,7 +97,6 @@ const offlineNode = {
 
 describe('TailscalePage Exit Node control', () => {
   beforeEach(() => {
-    localStorage.setItem('esp-claw-lang', 'en');
     config.loaded = true;
     config.values.tailscale_exit_node = '';
     api.fetchStatus.mockResolvedValue(connectedStatus);
@@ -115,16 +114,17 @@ describe('TailscalePage Exit Node control', () => {
   it('always renders a regular Wi-Fi option when no nodes are available', async () => {
     render(() => <TailscalePage />);
 
-    expect(await screen.findByLabelText('Exit Node')).not.toBeNull();
-    expect(screen.getByRole('option', { name: /regular Wi-Fi/i })).not.toBeNull();
+    expect(await screen.findByLabelText('Exit Node')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /regular Wi-Fi/i })).toBeInTheDocument();
+    expect(await screen.findByText('No Exit Nodes available.')).toBeInTheDocument();
   });
 
   it('keeps the Exit Node control visible while configuration is loading', async () => {
     config.loaded = false;
     render(() => <TailscalePage />);
 
-    expect(await screen.findByLabelText('Exit Node')).not.toBeNull();
-    expect(screen.getByRole('option', { name: /regular Wi-Fi/i })).not.toBeNull();
+    expect(await screen.findByLabelText('Exit Node')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /regular Wi-Fi/i })).toBeInTheDocument();
   });
 
   it('renders online nodes as selectable and offline nodes as disabled', async () => {
@@ -133,16 +133,18 @@ describe('TailscalePage Exit Node control', () => {
 
     const online = await screen.findByRole('option', { name: /racknerd/i });
     const offline = screen.getByRole('option', { name: /offline-box/i });
-    expect((online as HTMLOptionElement).disabled).toBe(false);
-    expect((offline as HTMLOptionElement).disabled).toBe(true);
+    expect(online).toBeEnabled();
+    expect(offline).toBeDisabled();
+    expect(screen.queryByText('No Exit Nodes available.')).not.toBeInTheDocument();
   });
 
   it('keeps the select visible and shows an inline list error', async () => {
     api.fetchExitNodes.mockRejectedValue(new Error('Exit Node list unavailable'));
     render(() => <TailscalePage />);
 
-    expect(await screen.findByLabelText('Exit Node')).not.toBeNull();
-    expect(await screen.findByText('Exit Node list unavailable')).not.toBeNull();
+    expect(await screen.findByLabelText('Exit Node')).toBeInTheDocument();
+    expect(await screen.findByText('Exit Node list unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('No Exit Nodes available.')).not.toBeInTheDocument();
   });
 
   it('switches immediately, disables only while mutating, then refreshes runtime and config', async () => {
@@ -159,11 +161,11 @@ describe('TailscalePage Exit Node control', () => {
 
     fireEvent.change(select, { target: { value: onlineNode.ip } });
     expect(api.setExitNode).toHaveBeenCalledWith(onlineNode.ip);
-    expect(select.disabled).toBe(true);
-    expect(screen.getByText('Switching Exit Node…')).not.toBeNull();
+    expect(select).toBeDisabled();
+    expect(screen.getByText('Switching Exit Node…')).toBeInTheDocument();
 
     finishMutation?.({ ok: true, persisted: true });
-    await waitFor(() => expect(select.disabled).toBe(false));
+    await waitFor(() => expect(select).toBeEnabled());
     expect(api.fetchStatus).toHaveBeenCalledTimes(2);
     expect(api.fetchExitNodes).toHaveBeenCalledTimes(2);
     expect(config.reload).toHaveBeenCalledWith(['tailscale']);
@@ -215,8 +217,8 @@ describe('TailscalePage Exit Node control', () => {
 
     fireEvent.change(select, { target: { value: onlineNode.ip } });
 
-    expect(await screen.findByText(/previous Exit Node was restored/i)).not.toBeNull();
-    await waitFor(() => expect(select.disabled).toBe(false));
+    expect(await screen.findByText(/previous Exit Node was restored/i)).toBeInTheDocument();
+    await waitFor(() => expect(select).toBeEnabled());
     expect(api.fetchStatus).toHaveBeenCalledTimes(2);
     expect(config.reload).toHaveBeenCalledWith(['tailscale']);
   });

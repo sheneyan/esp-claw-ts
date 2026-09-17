@@ -134,6 +134,54 @@ export type TailscaleStatus = {
   heap_psram_free: number;
 };
 
+export const TAILSCALE_MAX_DERP_RTTS = 8;
+
+export type TailscaleDerpRegion = {
+  id: number;
+  name: string;
+};
+
+export type TailscaleDerpRtt = {
+  region: TailscaleDerpRegion;
+  rtt_ms: number;
+  timed_out: boolean;
+};
+
+/** Response emitted by the model-facing `tailscale_status` capability.
+ * `derp.rtts` and `derp.rtt_count` are capped at TAILSCALE_MAX_DERP_RTTS by
+ * the firmware renderer. The HTTP settings endpoint intentionally exposes the
+ * smaller TailscaleStatus shape above. */
+export type TailscaleDiagnosticStatus = {
+  ok: true;
+  enabled: boolean;
+  connected: boolean;
+  hostname: string;
+  vpn_ip: string;
+  path: string;
+  peer_count: number;
+  peer_online: number;
+  exit_node: string;
+  state: string;
+  egress: string;
+  last_error: string;
+  derp: {
+    active: TailscaleDerpRegion;
+    default: TailscaleDerpRegion;
+    rtt_count: number;
+    rtts: TailscaleDerpRtt[];
+  };
+  timing: {
+    derp_heartbeat_age_ms: number;
+    control_rx_age_ms: number;
+  };
+  reconnect: {
+    coord_watchdog: number;
+    coord_transport: number;
+    derp_watchdog: number;
+    derp_retry: number;
+  };
+};
+
 export type TailscaleExitNode = {
   ip: string;
   hostname: string;

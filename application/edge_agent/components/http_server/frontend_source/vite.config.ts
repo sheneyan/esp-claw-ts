@@ -25,14 +25,12 @@ export default defineConfig({
     cssCodeSplit: false,
     assetsInlineLimit: 100_000_000,
     chunkSizeWarningLimit: 4_000,
-    rollupOptions: {
-      output: {
-        codeSplitting: false,
-      },
-    },
   },
   test: {
     environment: 'jsdom',
+    environmentOptions: {
+      jsdom: { url: 'http://localhost/' },
+    },
     setupFiles: ['./src/test/setup.ts'],
   },
 });

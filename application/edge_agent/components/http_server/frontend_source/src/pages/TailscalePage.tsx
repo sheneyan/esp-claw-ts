@@ -86,6 +86,7 @@ export const TailscalePage: Component = () => {
   });
   const [status, setStatus] = createSignal<TailscaleStatus | null>(null);
   const [exitNodes, setExitNodes] = createSignal<TailscaleExitNode[]>([]);
+  const [exitNodesLoaded, setExitNodesLoaded] = createSignal(false);
   const [runtimeError, setRuntimeError] = createSignal<string | null>(null);
   const [exitNodesError, setExitNodesError] = createSignal<string | null>(null);
   const [mutationError, setMutationError] = createSignal<string | null>(null);
@@ -120,8 +121,10 @@ export const TailscalePage: Component = () => {
       }
       if (exitNodesResult.status === 'fulfilled') {
         setExitNodes(exitNodesResult.value);
+        setExitNodesLoaded(true);
         setExitNodesError(null);
       } else if ((exitNodesResult.reason as Error).name !== 'AbortError') {
+        setExitNodesLoaded(false);
         setExitNodesError((exitNodesResult.reason as Error).message);
       }
       setRuntimeError(errors.length > 0 ? Array.from(new Set(errors)).join(' · ') : null);
@@ -328,6 +331,11 @@ export const TailscalePage: Component = () => {
                 )}
               </For>
             </SelectInput>
+            <Show when={exitNodesLoaded() && exitNodes().length === 0 && !exitNodesError()}>
+              <p class="text-[0.75rem] text-[var(--color-text-muted)] sm:col-span-2">
+                {t('tailscaleExitNodeEmpty')}
+              </p>
+            </Show>
             <Show when={isGroupLoaded('tailscale')}>
               <TextInput
                 type="number"
