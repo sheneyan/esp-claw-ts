@@ -28,6 +28,18 @@ function(_microlink_assert_upstream_bind_patch source_dir)
     endif()
 endfunction()
 
+function(_microlink_assert_exact_unpatched_source source_dir)
+    file(SHA256 "${source_dir}/src/ml_stun.c" _stun_sha256)
+    file(SHA256 "${source_dir}/src/ml_coord.c" _coord_sha256)
+    if(NOT _stun_sha256 STREQUAL
+           "762f7a5eaa6d4b6e1f8be6c4595a8e81893bcadc7c11a3e374d74b7a79894039" OR
+       NOT _coord_sha256 STREQUAL
+           "b5ea85a275c8f5e51ec33d25efad67808cf5de1a39dec7199ff1d1ebcafdc89c")
+        message(FATAL_ERROR
+            "MicroLink sources do not match the exact expected unpatched ml_stun.c/ml_coord.c revisions: ${source_dir}")
+    endif()
+endfunction()
+
 function(microlink_apply_upstream_bind_patch source_dir)
     if(NOT EXISTS "${source_dir}/src/ml_stun.c" OR
        NOT EXISTS "${source_dir}/src/ml_coord.c")
@@ -47,37 +59,8 @@ function(microlink_apply_upstream_bind_patch source_dir)
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env
                 "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
-                "${_MICROLINK_GIT_EXECUTABLE}" apply --check --no-index --ignore-space-change
-                "${_MICROLINK_PATCH_FILE}"
-        WORKING_DIRECTORY "${source_dir}"
-        RESULT_VARIABLE _apply_check_result
-        OUTPUT_VARIABLE _apply_check_stdout
-        ERROR_VARIABLE _apply_check_stderr
-    )
-    if(_apply_check_result EQUAL 0)
-        execute_process(
-            COMMAND "${CMAKE_COMMAND}" -E env
-                    "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
-                    "${_MICROLINK_GIT_EXECUTABLE}" apply --no-index --ignore-space-change
-                    "${_MICROLINK_PATCH_FILE}"
-            WORKING_DIRECTORY "${source_dir}"
-            RESULT_VARIABLE _apply_result
-            OUTPUT_VARIABLE _apply_stdout
-            ERROR_VARIABLE _apply_stderr
-        )
-        if(NOT _apply_result EQUAL 0)
-            message(FATAL_ERROR
-                "MicroLink upstream-bind patch failed after a successful check:\n${_apply_stdout}${_apply_stderr}")
-        endif()
-        _microlink_assert_upstream_bind_patch("${source_dir}")
-        message(STATUS "Applied and verified MicroLink upstream-bind patch at ${source_dir}")
-        return()
-    endif()
-
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E env
-                "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
-                "${_MICROLINK_GIT_EXECUTABLE}" apply --reverse --check --no-index --ignore-space-change
+                "${_MICROLINK_GIT_EXECUTABLE}" apply --reverse --check --no-index
+                --unidiff-zero --ignore-space-change
                 "${_MICROLINK_PATCH_FILE}"
         WORKING_DIRECTORY "${source_dir}"
         RESULT_VARIABLE _reverse_check_result
@@ -90,10 +73,41 @@ function(microlink_apply_upstream_bind_patch source_dir)
         return()
     endif()
 
-    message(FATAL_ERROR
-        "MicroLink sources do not match the exact expected upstream-bind patch state.\n"
-        "Apply check:\n${_apply_check_stdout}${_apply_check_stderr}\n"
-        "Reverse check:\n${_reverse_check_stdout}${_reverse_check_stderr}")
+    _microlink_assert_exact_unpatched_source("${source_dir}")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+                "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
+                "${_MICROLINK_GIT_EXECUTABLE}" apply --check --no-index
+                --unidiff-zero --ignore-space-change
+                "${_MICROLINK_PATCH_FILE}"
+        WORKING_DIRECTORY "${source_dir}"
+        RESULT_VARIABLE _apply_check_result
+        OUTPUT_VARIABLE _apply_check_stdout
+        ERROR_VARIABLE _apply_check_stderr
+    )
+    if(NOT _apply_check_result EQUAL 0)
+        message(FATAL_ERROR
+            "MicroLink exact sources failed the upstream-bind patch check:\n${_apply_check_stdout}${_apply_check_stderr}\n"
+            "Reverse check:\n${_reverse_check_stdout}${_reverse_check_stderr}")
+    endif()
+
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+                "GIT_CEILING_DIRECTORIES=${_MICROLINK_SOURCE_PARENT}"
+                "${_MICROLINK_GIT_EXECUTABLE}" apply --no-index
+                --unidiff-zero --ignore-space-change
+                "${_MICROLINK_PATCH_FILE}"
+        WORKING_DIRECTORY "${source_dir}"
+        RESULT_VARIABLE _apply_result
+        OUTPUT_VARIABLE _apply_stdout
+        ERROR_VARIABLE _apply_stderr
+    )
+    if(NOT _apply_result EQUAL 0)
+        message(FATAL_ERROR
+            "MicroLink upstream-bind patch failed after a successful check:\n${_apply_stdout}${_apply_stderr}")
+    endif()
+    _microlink_assert_upstream_bind_patch("${source_dir}")
+    message(STATUS "Applied and verified MicroLink upstream-bind patch at ${source_dir}")
 endfunction()
 
 if(CMAKE_SCRIPT_MODE_FILE)

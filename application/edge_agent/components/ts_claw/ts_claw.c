@@ -94,6 +94,9 @@ static void set_disconnected_status(void)
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     s_ts.status.connected = false;
     s_ts.status.direct_path_available = false;
+    s_ts.status.vpn_ip = 0u;
+    s_ts.status.peer_count = 0;
+    s_ts.status.peer_online = 0;
     copy_string(s_ts.status.egress, sizeof(s_ts.status.egress),
                 s_ts.wifi_has_ip ? "sta" : "unavailable");
     xSemaphoreGive(s_ts.lock);
@@ -150,14 +153,15 @@ static void worker_destroy_microlink(void)
         return;
     }
 
-    microlink_set_state_callback(s_ts.ml, NULL, NULL);
-    (void)microlink_pin_wg_output_netif(s_ts.ml, NULL);
-    esp_err_t err = microlink_stop(s_ts.ml);
+    microlink_t *ml = s_ts.ml;
+    (void)microlink_pin_wg_output_netif(ml, NULL);
+    esp_err_t err = microlink_stop(ml);
     if (err != ESP_OK) {
         set_last_error("microlink stop failed");
         ESP_LOGE(TAG, "microlink_stop failed: %s", esp_err_to_name(err));
     }
-    microlink_destroy(s_ts.ml);
+    microlink_set_state_callback(ml, NULL, NULL);
+    microlink_destroy(ml);
     s_ts.ml = NULL;
     s_ts.upstream_pinned = false;
     s_ts.error_since_ms = 0u;
@@ -455,7 +459,7 @@ static void worker_handle_event(const ts_event_t *event)
     case TS_EVENT_FACTORY_RESET:
         worker_destroy_microlink();
         result = microlink_factory_reset();
-        if (result == ESP_OK && worker_wifi_snapshot(NULL) &&
+        if (result == ESP_OK && s_ts.config.enabled && worker_wifi_snapshot(NULL) &&
             !s_ts.resource_guard.stopped) {
             result = worker_start_microlink();
         }
