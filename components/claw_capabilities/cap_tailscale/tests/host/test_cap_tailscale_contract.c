@@ -325,6 +325,7 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     TEST_CHECK(strstr(output, "safe-error-sentinel") != NULL);
     TEST_CHECK(strstr(output, "\"active\":{\"id\":1,\"name\":\"active-derp-sentinel\"}") != NULL);
     TEST_CHECK(strstr(output, "\"default\":{\"id\":2,\"name\":\"default-derp-sentinel\"}") != NULL);
+    TEST_CHECK(strstr(output, "\"rtt_count\":2") != NULL);
     TEST_CHECK(strstr(output, "active-derp-sentinel") != NULL);
     TEST_CHECK(strstr(output, "rtt-derp-sentinel") != NULL);
     TEST_CHECK(strstr(output, "\"id\":3,\"name\":\"rtt-derp-sentinel\"") != NULL);
