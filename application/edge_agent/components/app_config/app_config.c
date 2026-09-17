@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "app_config.h"
+#include "app_config_tailscale_validation.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -61,6 +62,12 @@ typedef struct {
 #define APP_DEFAULT_LLM_VISIBLE_CAP_GROUPS   ""
 #define APP_DEFAULT_ENABLED_LUA_MODULES      ""
 #define APP_DEFAULT_TIME_TIMEZONE            "CST-8"
+#define APP_DEFAULT_TAILSCALE_ENABLED         "false"
+#define APP_DEFAULT_TAILSCALE_AUTH_KEY        ""
+#define APP_DEFAULT_TAILSCALE_HOSTNAME        ""
+#define APP_DEFAULT_TAILSCALE_LOGIN_SERVER    ""
+#define APP_DEFAULT_TAILSCALE_EXIT_NODE       ""
+#define APP_DEFAULT_TAILSCALE_MAX_PEERS       "16"
 
 static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(wifi_ssid, "wifi_ssid", APP_WIFI_SSID),
@@ -97,6 +104,12 @@ static const app_config_field_t s_fields[] = {
     APP_CONFIG_FIELD(llm_visible_cap_groups, "vis_cap_groups", APP_DEFAULT_LLM_VISIBLE_CAP_GROUPS),
     APP_CONFIG_FIELD(enabled_lua_modules, "en_lua_mods", APP_DEFAULT_ENABLED_LUA_MODULES),
     APP_CONFIG_FIELD(time_timezone, "time_timezone", APP_DEFAULT_TIME_TIMEZONE),
+    APP_CONFIG_FIELD(tailscale_enabled, "ts_enabled", APP_DEFAULT_TAILSCALE_ENABLED),
+    APP_CONFIG_FIELD(tailscale_auth_key, "ts_auth_key", APP_DEFAULT_TAILSCALE_AUTH_KEY),
+    APP_CONFIG_FIELD(tailscale_hostname, "ts_hostname", APP_DEFAULT_TAILSCALE_HOSTNAME),
+    APP_CONFIG_FIELD(tailscale_login_server, "ts_login", APP_DEFAULT_TAILSCALE_LOGIN_SERVER),
+    APP_CONFIG_FIELD(tailscale_exit_node, "ts_exit_node", APP_DEFAULT_TAILSCALE_EXIT_NODE),
+    APP_CONFIG_FIELD(tailscale_max_peers, "ts_max_peers", APP_DEFAULT_TAILSCALE_MAX_PEERS),
 };
 
 // for backward compatibility, migrate from old settings to new settings
@@ -543,6 +556,26 @@ esp_err_t app_config_validate_wifi(const app_config_t *config, const char **mess
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
+}
+
+esp_err_t app_config_validate_tailscale(const app_config_t *config, char *message, size_t message_size)
+{
+    if (!config) {
+        if (message && message_size > 0) {
+            strlcpy(message, "Missing Tailscale configuration", message_size);
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const app_config_tailscale_view_t view = {
+        .enabled = config->tailscale_enabled,
+        .auth_key = config->tailscale_auth_key,
+        .hostname = config->tailscale_hostname,
+        .login_server = config->tailscale_login_server,
+        .exit_node = config->tailscale_exit_node,
+        .max_peers = config->tailscale_max_peers,
+    };
+    return app_config_tailscale_validate(&view, message, message_size) ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
 void app_config_to_claw(const app_config_t *config, app_claw_config_t *out)

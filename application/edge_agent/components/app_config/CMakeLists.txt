@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "app_config.c"
+        "app_config_tailscale_validation.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

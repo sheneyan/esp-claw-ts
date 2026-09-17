@@ -22,17 +22,22 @@
  * the same serialisation logic.
  */
 
-#define CONFIG_FIELD(group, field) { \
+#define CONFIG_FIELD_WITH_ACCESS(group, field, is_write_only) { \
     #field, (group), \
     offsetof(app_config_t, field), \
-    sizeof(((app_config_t *)0)->field) \
+    sizeof(((app_config_t *)0)->field), \
+    (is_write_only) \
 }
+
+#define CONFIG_FIELD(group, field) CONFIG_FIELD_WITH_ACCESS(group, field, false)
+#define CONFIG_WRITE_ONLY_FIELD(group, field) CONFIG_FIELD_WITH_ACCESS(group, field, true)
 
 typedef struct {
     const char *name;
     const char *group;
     size_t offset;
     size_t size;
+    bool write_only;
 } config_field_def_t;
 
 static const config_field_def_t CONFIG_FIELDS[] = {
@@ -76,6 +81,13 @@ static const config_field_def_t CONFIG_FIELDS[] = {
     CONFIG_FIELD("skills",       enabled_lua_modules),
 
     CONFIG_FIELD("time",         time_timezone),
+
+    CONFIG_FIELD("tailscale",    tailscale_enabled),
+    CONFIG_WRITE_ONLY_FIELD("tailscale", tailscale_auth_key),
+    CONFIG_FIELD("tailscale",    tailscale_hostname),
+    CONFIG_FIELD("tailscale",    tailscale_login_server),
+    CONFIG_FIELD("tailscale",    tailscale_exit_node),
+    CONFIG_FIELD("tailscale",    tailscale_max_peers),
 };
 
 static const size_t CONFIG_FIELD_COUNT = sizeof(CONFIG_FIELDS) / sizeof(CONFIG_FIELDS[0]);
@@ -195,6 +207,10 @@ static esp_err_t emit_config(httpd_req_t *req,
         if (!field_matches_filter(field, groups_csv, fields_csv)) {
             continue;
         }
+        if (field->write_only) {
+            cJSON_AddBoolToObject(root, "tailscale_auth_key_set", field_value(config, field)[0] != '\0');
+            continue;
+        }
         http_server_json_add_string(root, field->name, field_value(config, field));
     }
 
@@ -252,6 +268,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                 if (entry) {
                     cJSON_AddStringToObject(entry, "name", field->name);
                     cJSON_AddStringToObject(entry, "group", field->group);
+                    cJSON_AddBoolToObject(entry, "write_only", field->write_only);
                     cJSON_AddItemToArray(fields, entry);
                 }
             }
@@ -314,13 +331,19 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     }
 
     /* Partial writes: only fields present in the JSON body are applied.
-     * Empty string is a valid value (lets the client clear a slot). */
+     * Empty strings clear normal fields; write-only fields preserve their
+     * existing value when omitted or submitted empty. */
+    size_t recognised_count = 0;
     size_t applied_count = 0;
 
     for (size_t i = 0; i < CONFIG_FIELD_COUNT; i++) {
         const config_field_def_t *field = &CONFIG_FIELDS[i];
         cJSON *item = cJSON_GetObjectItemCaseSensitive(root, field->name);
         if (!cJSON_IsString(item)) {
+            continue;
+        }
+        recognised_count++;
+        if (field->write_only && item->valuestring[0] == '\0') {
             continue;
         }
         if (strcmp(field->name, "llm_max_tokens") == 0 ||
@@ -351,7 +374,7 @@ static esp_err_t config_post_handler(httpd_req_t *req)
 
     cJSON_Delete(root);
 
-    if (applied_count == 0) {
+    if (recognised_count == 0) {
         free(config);
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                                    "Request did not contain any recognised fields");
@@ -362,6 +385,13 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     if (err != ESP_OK) {
         free(config);
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, wifi_config_error);
+    }
+
+    char tailscale_config_error[128];
+    err = app_config_validate_tailscale(config, tailscale_config_error, sizeof(tailscale_config_error));
+    if (err != ESP_OK) {
+        free(config);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, tailscale_config_error);
     }
 
     err = ctx->services.save_config(config);
