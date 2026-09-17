@@ -20,6 +20,43 @@ static void test_timestamp_age_is_bounded(void)
     TEST_CHECK(ts_claw_timestamp_age_ms(1000, 0) == 0);
     TEST_CHECK(ts_claw_timestamp_age_ms(1000, 750) == 250);
     TEST_CHECK(ts_claw_timestamp_age_ms(750, 1000) == 0);
+    TEST_CHECK(ts_claw_timestamp_age_ms(1000, 1000) == 0);
+    TEST_CHECK(ts_claw_timestamp_age_ms(1000, UINT64_MAX) == 0);
+}
+
+static void test_derp_rtt_conversion_respects_capacity_and_canary(void)
+{
+    const ts_claw_derp_rtt_source_t source[] = {
+        {.region_id = 9, .rtt_ms = 224, .region_name = "Tokyo"},
+        {.region_id = 2, .rtt_ms = 168, .region_name = "New York City"},
+        {.region_id = 7, .rtt_ms = 0, .region_name = NULL},
+    };
+    ts_claw_derp_rtt_t out[3];
+    ts_claw_derp_rtt_t canary;
+
+    memset(&canary, 0xA5, sizeof(canary));
+    memset(&out[2], 0xA5, sizeof(out[2]));
+
+    const size_t count = ts_claw_convert_derp_rtts(out, 2, source, 3);
+
+    TEST_CHECK(count == 2);
+    TEST_CHECK(out[0].region_id == 9);
+    TEST_CHECK(out[1].region_id == 2);
+    TEST_CHECK(memcmp(&out[2], &canary, sizeof(canary)) == 0);
+}
+
+static void test_derp_rtt_conversion_rejects_empty_inputs(void)
+{
+    const ts_claw_derp_rtt_source_t source = {
+        .region_id = 9,
+        .rtt_ms = 224,
+        .region_name = "Tokyo",
+    };
+    ts_claw_derp_rtt_t out;
+
+    TEST_CHECK(ts_claw_convert_derp_rtts(NULL, 1, &source, 1) == 0);
+    TEST_CHECK(ts_claw_convert_derp_rtts(&out, 0, &source, 1) == 0);
+    TEST_CHECK(ts_claw_convert_derp_rtts(&out, 1, NULL, 1) == 0);
 }
 
 static void test_derp_rtt_conversion_preserves_order_and_timeout_semantics(void)
@@ -80,6 +117,8 @@ int main(void)
 {
     test_timestamp_age_is_bounded();
     test_derp_rtt_conversion_preserves_order_and_timeout_semantics();
+    test_derp_rtt_conversion_respects_capacity_and_canary();
+    test_derp_rtt_conversion_rejects_empty_inputs();
     test_derp_rtt_conversion_clamps_and_terminates_names();
 
     puts("ts_claw_diagnostics: all tests passed");

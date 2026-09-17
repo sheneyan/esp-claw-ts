@@ -50,7 +50,7 @@ typedef struct {
     size_t derp_rtt_count;
     uint64_t derp_heartbeat_age_ms;
     uint64_t control_rx_age_ms;
-    /* Reconnect-cause counters since boot; wd denotes watchdog recovery. */
+    /* Current-instance reconnect causes; wd denotes watchdog recovery. */
     uint32_t rc_coord_stream_wd;
     uint32_t rc_coord_transport;
     uint32_t rc_derp_rx_wd;
