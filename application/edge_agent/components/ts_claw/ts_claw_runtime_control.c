@@ -8,7 +8,67 @@ static bool runtime_ops_valid(const ts_claw_runtime_ops_t *ops)
            ops->set_desired_ip != NULL && ops->start != NULL &&
            ops->rebind != NULL && ops->observe_reconnect_status != NULL &&
            ops->observe_connected != NULL &&
-           ops->observe_exit_active != NULL;
+           ops->observe_exit_active != NULL && ops->now_ms != NULL;
+}
+
+bool ts_claw_runtime_wifi_pending_record(
+    ts_claw_runtime_wifi_pending_t *pending, bool has_ip, void *netif)
+{
+    if (pending == NULL) {
+        return false;
+    }
+    const bool notify_worker = !pending->pending;
+    pending->pending = true;
+    pending->has_ip = has_ip;
+    pending->netif = has_ip ? netif : NULL;
+    return notify_worker;
+}
+
+bool ts_claw_runtime_wifi_pending_take(
+    ts_claw_runtime_wifi_pending_t *pending, bool runtime_active,
+    bool *has_ip, void **netif)
+{
+    if (pending == NULL || has_ip == NULL || netif == NULL ||
+        !pending->pending || (pending->has_ip && runtime_active)) {
+        return false;
+    }
+    *has_ip = pending->has_ip;
+    *netif = pending->netif;
+    pending->pending = false;
+    return true;
+}
+
+void ts_claw_runtime_destroy_retry_schedule(
+    ts_claw_runtime_destroy_retry_t *retry,
+    ts_claw_runtime_destroy_retry_mode_t mode,
+    uint64_t current_ms,
+    uint32_t delay_ms)
+{
+    if (retry == NULL) {
+        return;
+    }
+    if (mode == TS_CLAW_RUNTIME_DESTROY_RETRY_STOP ||
+        retry->mode == TS_CLAW_RUNTIME_DESTROY_RETRY_NONE) {
+        retry->mode = mode;
+    }
+    retry->scheduled_ms = current_ms;
+    retry->delay_ms = delay_ms;
+}
+
+bool ts_claw_runtime_destroy_retry_due(
+    const ts_claw_runtime_destroy_retry_t *retry, uint64_t current_ms)
+{
+    return retry != NULL &&
+           retry->mode != TS_CLAW_RUNTIME_DESTROY_RETRY_NONE &&
+           current_ms - retry->scheduled_ms >= retry->delay_ms;
+}
+
+void ts_claw_runtime_destroy_retry_clear(
+    ts_claw_runtime_destroy_retry_t *retry)
+{
+    if (retry != NULL) {
+        memset(retry, 0, sizeof(*retry));
+    }
 }
 
 static bool runtime_deadline_reached(uint64_t started_ms,
@@ -35,10 +95,8 @@ static void runtime_finish(ts_claw_runtime_control_t *control,
 }
 
 static void runtime_start_rollback(ts_claw_runtime_control_t *control,
-                                   esp_err_t operation_error,
-                                   uint64_t current_ms)
+                                   esp_err_t operation_error)
 {
-    control->rollback_started_ms = current_ms;
     const esp_err_t retire_error = control->ops->retire_probe(control->ops_ctx);
     const esp_err_t destroy_error = retire_error == ESP_OK ?
         control->ops->destroy(control->ops_ctx) : retire_error;
@@ -61,14 +119,14 @@ static void runtime_start_rollback(ts_claw_runtime_control_t *control,
         runtime_finish(control, operation_error, false, false);
         return;
     }
+    control->rollback_started_ms = control->ops->now_ms(control->ops_ctx);
     control->phase = TS_CLAW_RUNTIME_ROLLBACK_WAIT_CONNECTED;
 }
 
 static void runtime_fail_set(ts_claw_runtime_control_t *control,
-                             esp_err_t operation_error,
-                             uint64_t current_ms)
+                             esp_err_t operation_error)
 {
-    runtime_start_rollback(control, operation_error, current_ms);
+    runtime_start_rollback(control, operation_error);
 }
 
 void ts_claw_runtime_control_init(ts_claw_runtime_control_t *control,
@@ -109,23 +167,23 @@ esp_err_t ts_claw_runtime_control_begin_set(ts_claw_runtime_control_t *control,
 
     esp_err_t error = control->ops->retire_probe(control->ops_ctx);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error, current_ms);
+        runtime_fail_set(control, error);
         return ESP_OK;
     }
     error = control->ops->destroy(control->ops_ctx);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error, current_ms);
+        runtime_fail_set(control, error);
         return ESP_OK;
     }
     error = control->ops->set_desired_ip(control->ops_ctx, requested_ip);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error, current_ms);
+        runtime_fail_set(control, error);
         return ESP_OK;
     }
     control->current_desired_ip = requested_ip;
     error = control->ops->start(control->ops_ctx);
     if (error != ESP_OK) {
-        runtime_fail_set(control, error, current_ms);
+        runtime_fail_set(control, error);
         return ESP_OK;
     }
 
@@ -182,7 +240,7 @@ static bool runtime_observe_connected(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
+            runtime_fail_set(control, ESP_ERR_TIMEOUT);
         }
         return false;
     }
@@ -194,7 +252,7 @@ static bool runtime_observe_connected(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, error, current_ms);
+            runtime_fail_set(control, error);
         }
         return false;
     }
@@ -214,7 +272,7 @@ static bool runtime_observe_connected(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
+            runtime_fail_set(control, ESP_ERR_TIMEOUT);
         }
     }
     return false;
@@ -230,7 +288,7 @@ static void runtime_observe_exit(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
+            runtime_fail_set(control, ESP_ERR_TIMEOUT);
         }
         return;
     }
@@ -242,7 +300,7 @@ static void runtime_observe_exit(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, error, current_ms);
+            runtime_fail_set(control, error);
         }
         return;
     }
@@ -255,7 +313,7 @@ static void runtime_observe_exit(ts_claw_runtime_control_t *control,
         if (rollback) {
             runtime_finish(control, control->operation_error, false, false);
         } else {
-            runtime_fail_set(control, ESP_ERR_TIMEOUT, current_ms);
+            runtime_fail_set(control, ESP_ERR_TIMEOUT);
         }
     }
 }

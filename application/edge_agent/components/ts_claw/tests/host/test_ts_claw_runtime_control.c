@@ -27,6 +27,7 @@ typedef struct {
     uint32_t desired_ip;
     esp_err_t retire_result;
     esp_err_t destroy_results[3];
+    uint32_t destroy_advance_ms[3];
     size_t destroy_count;
     esp_err_t set_results[3];
     size_t set_count;
@@ -43,6 +44,9 @@ typedef struct {
     bool exit_values[8];
     esp_err_t exit_results[8];
     size_t exit_count;
+    uint64_t now_ms;
+    bool ml_exists;
+    ts_claw_runtime_destroy_retry_t destroy_retry;
 } fake_runtime_t;
 
 static void log_call(fake_runtime_t *fake, char call)
@@ -64,7 +68,18 @@ static esp_err_t fake_destroy(void *ctx)
     fake_runtime_t *fake = ctx;
     log_call(fake, 'D');
     const size_t index = fake->destroy_count++;
-    return index < 3u ? fake->destroy_results[index] : ESP_OK;
+    if (index < 3u) {
+        fake->now_ms += fake->destroy_advance_ms[index];
+    }
+    const esp_err_t result = index < 3u ? fake->destroy_results[index] : ESP_OK;
+    if (result == ESP_OK) {
+        fake->ml_exists = false;
+    } else {
+        ts_claw_runtime_destroy_retry_schedule(
+            &fake->destroy_retry, TS_CLAW_RUNTIME_DESTROY_RETRY_STOP,
+            fake->now_ms, 1000u);
+    }
+    return result;
 }
 
 static esp_err_t fake_set_desired_ip(void *ctx, uint32_t desired_ip)
@@ -84,7 +99,14 @@ static esp_err_t fake_start(void *ctx)
     fake_runtime_t *fake = ctx;
     log_call(fake, 'S');
     const size_t index = fake->start_count++;
-    return index < 3u ? fake->start_results[index] : ESP_OK;
+    const esp_err_t result = index < 3u ? fake->start_results[index] : ESP_OK;
+    fake->ml_exists = result == ESP_OK;
+    return result;
+}
+
+static uint64_t fake_now_ms(void *ctx)
+{
+    return ((fake_runtime_t *)ctx)->now_ms;
 }
 
 static esp_err_t fake_rebind(void *ctx)
@@ -133,12 +155,56 @@ static const ts_claw_runtime_ops_t s_ops = {
     .observe_reconnect_status = fake_observe_reconnect_status,
     .observe_connected = fake_observe_connected,
     .observe_exit_active = fake_observe_exit_active,
+    .now_ms = fake_now_ms,
 };
 
 static void fake_init(fake_runtime_t *fake, uint32_t desired_ip)
 {
     memset(fake, 0, sizeof(*fake));
     fake->desired_ip = desired_ip;
+    fake->ml_exists = true;
+}
+
+static void test_wifi_pending_defers_up_during_runtime_operation(void)
+{
+    ts_claw_runtime_wifi_pending_t pending = {0};
+    bool has_ip = true;
+    void *netif = (void *)(uintptr_t)1u;
+    void *const first_netif = (void *)(uintptr_t)2u;
+    void *const latest_netif = (void *)(uintptr_t)3u;
+
+    TEST_CHECK(ts_claw_runtime_wifi_pending_record(&pending, false, NULL));
+    TEST_CHECK(ts_claw_runtime_wifi_pending_take(
+        &pending, true, &has_ip, &netif));
+    TEST_CHECK(!has_ip && netif == NULL);
+
+    TEST_CHECK(ts_claw_runtime_wifi_pending_record(
+        &pending, true, first_netif));
+    TEST_CHECK(!ts_claw_runtime_wifi_pending_take(
+        &pending, true, &has_ip, &netif));
+    TEST_CHECK(pending.pending);
+    TEST_CHECK(!ts_claw_runtime_wifi_pending_record(
+        &pending, true, latest_netif));
+    TEST_CHECK(ts_claw_runtime_wifi_pending_take(
+        &pending, false, &has_ip, &netif));
+    TEST_CHECK(has_ip && netif == latest_netif);
+    TEST_CHECK(!pending.pending);
+}
+
+static void test_wifi_pending_down_supersedes_deferred_up(void)
+{
+    ts_claw_runtime_wifi_pending_t pending = {0};
+    bool has_ip = true;
+    void *netif = (void *)(uintptr_t)1u;
+
+    TEST_CHECK(ts_claw_runtime_wifi_pending_record(
+        &pending, true, (void *)(uintptr_t)2u));
+    TEST_CHECK(!ts_claw_runtime_wifi_pending_take(
+        &pending, true, &has_ip, &netif));
+    TEST_CHECK(!ts_claw_runtime_wifi_pending_record(&pending, false, NULL));
+    TEST_CHECK(ts_claw_runtime_wifi_pending_take(
+        &pending, true, &has_ip, &netif));
+    TEST_CHECK(!has_ip && netif == NULL);
 }
 
 static ts_claw_runtime_completion_t take_completion(ts_claw_runtime_control_t *control,
@@ -223,6 +289,37 @@ static void test_destroy_failure_rolls_back_once(void)
     TEST_CHECK(strcmp(fake.calls, "PDPDOSKE") == 0);
     assert_recovered_failure(&fake, &control, TEST_ERROR);
     TEST_CHECK(fake.start_count == 1u);
+}
+
+static void test_two_destroy_timeouts_leave_one_cleanup_retry_until_success(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.destroy_results[0] = TEST_ERROR;
+    fake.destroy_results[1] = TEST_ERROR;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
+    const ts_claw_runtime_completion_t completion =
+        take_completion(&control, TEST_ERROR);
+    TEST_CHECK(completion.rollback_attempted);
+    TEST_CHECK(!completion.rollback_recovered);
+    TEST_CHECK(fake.destroy_count == 2u);
+    TEST_CHECK(fake.start_count == 0u);
+    TEST_CHECK(fake.destroy_retry.mode == TS_CLAW_RUNTIME_DESTROY_RETRY_STOP);
+    TEST_CHECK(fake.ml_exists);
+
+    fake.now_ms = 1000u;
+    TEST_CHECK(ts_claw_runtime_destroy_retry_due(
+        &fake.destroy_retry, fake.now_ms));
+    TEST_CHECK(fake_destroy(&fake) == ESP_OK);
+    ts_claw_runtime_destroy_retry_clear(&fake.destroy_retry);
+    TEST_CHECK(!fake.ml_exists);
+    TEST_CHECK(fake.destroy_count == 3u);
+    TEST_CHECK(fake.start_count == 0u);
+    TEST_CHECK(fake.destroy_retry.mode == TS_CLAW_RUNTIME_DESTROY_RETRY_NONE);
 }
 
 static void test_start_failure_rolls_back_once(void)
@@ -384,6 +481,7 @@ static void test_timeout_starts_a_fresh_rollback_window(void)
 
     TEST_CHECK(ts_claw_runtime_control_begin_set(
                    &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
+    fake.now_ms = 1000u;
     ts_claw_runtime_control_advance(&control, 1000u);
     TEST_CHECK(ts_claw_runtime_control_is_active(&control));
     TEST_CHECK(strcmp(fake.calls, "PDNSPDOS") == 0);
@@ -392,6 +490,25 @@ static void test_timeout_starts_a_fresh_rollback_window(void)
     ts_claw_runtime_control_advance(&control, 1250u);
     TEST_CHECK(strcmp(fake.calls, "PDNSPDOSKE") == 0);
     assert_recovered_failure(&fake, &control, ESP_ERR_TIMEOUT);
+}
+
+static void test_blocking_failure_samples_rollback_clock_after_rebuild(void)
+{
+    fake_runtime_t fake;
+    ts_claw_runtime_control_t control;
+    fake_init(&fake, TEST_OLD_IP);
+    fake.destroy_results[0] = TEST_ERROR;
+    fake.destroy_advance_ms[0] = 900u;
+    fake.connected_values[0] = true;
+    fake.exit_values[0] = true;
+    ts_claw_runtime_control_init(&control, &s_ops, &fake);
+
+    TEST_CHECK(ts_claw_runtime_control_begin_set(
+                   &control, TEST_OLD_IP, TEST_NEW_IP, 1000u, 0u) == ESP_OK);
+    TEST_CHECK(control.rollback_started_ms == 900u);
+    fake.now_ms = 1001u;
+    ts_claw_runtime_control_advance(&control, 1001u);
+    assert_recovered_failure(&fake, &control, TEST_ERROR);
 }
 
 static void test_positive_deadline_precedes_late_connection_success(void)
@@ -665,9 +782,12 @@ static void test_reconnect_failures_and_timeout(void)
 
 int main(void)
 {
+    test_wifi_pending_defers_up_during_runtime_operation();
+    test_wifi_pending_down_supersedes_deferred_up();
     test_set_success_sequence();
     test_clear_success_stops_after_connected();
     test_destroy_failure_rolls_back_once();
+    test_two_destroy_timeouts_leave_one_cleanup_retry_until_success();
     test_start_failure_rolls_back_once();
     test_desired_ip_failure_rolls_back_once();
     test_retire_failure_restores_old_desired_without_unsafe_destroy();
@@ -677,6 +797,7 @@ int main(void)
     test_failed_recovery_destroy_never_reports_success();
     test_clock_wrap_before_deadline_is_deterministic();
     test_timeout_starts_a_fresh_rollback_window();
+    test_blocking_failure_samples_rollback_clock_after_rebuild();
     test_positive_deadline_precedes_late_connection_success();
     test_positive_deadline_precedes_late_exit_success();
     test_timeout_zero_observes_once_then_rolls_back();

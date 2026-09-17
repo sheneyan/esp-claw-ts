@@ -19,6 +19,24 @@ typedef int esp_err_t;
 extern "C" {
 #endif
 
+typedef enum {
+    TS_CLAW_RUNTIME_DESTROY_RETRY_NONE = 0,
+    TS_CLAW_RUNTIME_DESTROY_RETRY_STOP,
+    TS_CLAW_RUNTIME_DESTROY_RETRY_RESTART,
+} ts_claw_runtime_destroy_retry_mode_t;
+
+typedef struct {
+    ts_claw_runtime_destroy_retry_mode_t mode;
+    uint64_t scheduled_ms;
+    uint32_t delay_ms;
+} ts_claw_runtime_destroy_retry_t;
+
+typedef struct {
+    void *netif;
+    bool pending;
+    bool has_ip;
+} ts_claw_runtime_wifi_pending_t;
+
 typedef struct {
     esp_err_t (*retire_probe)(void *ctx);
     esp_err_t (*destroy)(void *ctx);
@@ -30,6 +48,7 @@ typedef struct {
                                           uint64_t *control_rx_token);
     esp_err_t (*observe_connected)(void *ctx, bool *connected);
     esp_err_t (*observe_exit_active)(void *ctx, bool *active);
+    uint64_t (*now_ms)(void *ctx);
 } ts_claw_runtime_ops_t;
 
 typedef struct {
@@ -84,6 +103,21 @@ bool ts_claw_runtime_control_take_completion(
     ts_claw_runtime_control_t *control,
     esp_err_t *operation_result,
     ts_claw_runtime_completion_t *completion);
+
+bool ts_claw_runtime_wifi_pending_record(
+    ts_claw_runtime_wifi_pending_t *pending, bool has_ip, void *netif);
+bool ts_claw_runtime_wifi_pending_take(
+    ts_claw_runtime_wifi_pending_t *pending, bool runtime_active,
+    bool *has_ip, void **netif);
+void ts_claw_runtime_destroy_retry_schedule(
+    ts_claw_runtime_destroy_retry_t *retry,
+    ts_claw_runtime_destroy_retry_mode_t mode,
+    uint64_t current_ms,
+    uint32_t delay_ms);
+bool ts_claw_runtime_destroy_retry_due(
+    const ts_claw_runtime_destroy_retry_t *retry, uint64_t current_ms);
+void ts_claw_runtime_destroy_retry_clear(
+    ts_claw_runtime_destroy_retry_t *retry);
 
 #ifdef __cplusplus
 }

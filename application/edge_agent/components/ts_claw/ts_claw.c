@@ -42,12 +42,6 @@ enum {
 };
 
 typedef enum {
-    TS_DESTROY_RETRY_NONE,
-    TS_DESTROY_RETRY_STOP,
-    TS_DESTROY_RETRY_RESTART,
-} ts_destroy_retry_mode_t;
-
-typedef enum {
     TS_EVENT_WIFI_CHANGED,
     TS_EVENT_GET_DIAGNOSTICS,
     TS_EVENT_GET_EXIT_NODES,
@@ -72,8 +66,8 @@ typedef struct {
 typedef struct {
     bool initialized;
     bool wifi_has_ip;
-    bool wifi_event_pending;
     esp_netif_t *sta_netif;
+    ts_claw_runtime_wifi_pending_t wifi_pending;
     QueueHandle_t queue;
     SemaphoreHandle_t lock;
     TaskHandle_t worker;
@@ -88,8 +82,7 @@ typedef struct {
     bool exit_ping_accept_results;
     bool exit_ping_stop_requested;
     bool exit_ping_quiesced;
-    ts_destroy_retry_mode_t destroy_retry_mode;
-    uint64_t destroy_retry_ms;
+    ts_claw_runtime_destroy_retry_t destroy_retry;
     ts_resource_guard_t resource_guard;
     ts_exit_policy_t exit_policy;
     uint64_t next_resource_sample_ms;
@@ -115,8 +108,9 @@ static const char *TAG = "ts_claw";
 static ts_claw_context_t s_ts;
 
 static esp_err_t send_sync_event(ts_event_t *event);
-static void worker_schedule_destroy_retry(ts_destroy_retry_mode_t mode,
-                                          uint64_t current_ms);
+static void worker_schedule_destroy_retry(
+    ts_claw_runtime_destroy_retry_mode_t mode,
+    uint64_t current_ms);
 static esp_err_t worker_destroy_microlink_internal(bool retire_probe);
 
 static uint64_t now_ms(void)
@@ -400,7 +394,8 @@ static esp_err_t worker_start_microlink(void)
         set_last_error("wireguard upstream preset failed");
         ESP_LOGE(TAG, "microlink upstream preset failed: %s", esp_err_to_name(err));
         if (worker_destroy_microlink() != ESP_OK) {
-            worker_schedule_destroy_retry(TS_DESTROY_RETRY_RESTART, now_ms());
+            worker_schedule_destroy_retry(
+                TS_CLAW_RUNTIME_DESTROY_RETRY_RESTART, now_ms());
         }
         return err;
     }
@@ -411,7 +406,8 @@ static esp_err_t worker_start_microlink(void)
         set_last_error("microlink start failed");
         ESP_LOGE(TAG, "microlink_start failed: %s", esp_err_to_name(err));
         if (worker_destroy_microlink() != ESP_OK) {
-            worker_schedule_destroy_retry(TS_DESTROY_RETRY_RESTART, now_ms());
+            worker_schedule_destroy_retry(
+                TS_CLAW_RUNTIME_DESTROY_RETRY_RESTART, now_ms());
         }
         return err;
     }
@@ -436,7 +432,14 @@ static esp_err_t runtime_retire_probe(void *ctx)
 static esp_err_t runtime_destroy(void *ctx)
 {
     (void)ctx;
-    return worker_destroy_microlink_internal(false);
+    const esp_err_t error = worker_destroy_microlink_internal(false);
+    if (error != ESP_OK) {
+        worker_schedule_destroy_retry(
+            TS_CLAW_RUNTIME_DESTROY_RETRY_STOP, now_ms());
+    } else {
+        ts_claw_runtime_destroy_retry_clear(&s_ts.destroy_retry);
+    }
+    return error;
 }
 
 static esp_err_t runtime_set_desired_ip(void *ctx, uint32_t desired_ip)
@@ -462,12 +465,11 @@ static esp_err_t runtime_start(void *ctx)
         return ESP_ERR_INVALID_STATE;
     }
     s_ts.next_start_retry_ms = 0u;
-    s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
-    s_ts.destroy_retry_ms = 0u;
+    ts_claw_runtime_destroy_retry_clear(&s_ts.destroy_retry);
     esp_err_t error = worker_start_microlink();
     if (error != ESP_OK &&
-        s_ts.destroy_retry_mode == TS_DESTROY_RETRY_RESTART) {
-        s_ts.destroy_retry_mode = TS_DESTROY_RETRY_STOP;
+        s_ts.destroy_retry.mode == TS_CLAW_RUNTIME_DESTROY_RETRY_RESTART) {
+        s_ts.destroy_retry.mode = TS_CLAW_RUNTIME_DESTROY_RETRY_STOP;
     }
     return error;
 }
@@ -527,6 +529,12 @@ static esp_err_t runtime_observe_exit_active(void *ctx, bool *active)
     return ESP_OK;
 }
 
+static uint64_t runtime_now_ms(void *ctx)
+{
+    (void)ctx;
+    return now_ms();
+}
+
 static const ts_claw_runtime_ops_t s_runtime_ops = {
     .retire_probe = runtime_retire_probe,
     .destroy = runtime_destroy,
@@ -536,6 +544,7 @@ static const ts_claw_runtime_ops_t s_runtime_ops = {
     .observe_reconnect_status = runtime_observe_reconnect_status,
     .observe_connected = runtime_observe_connected,
     .observe_exit_active = runtime_observe_exit_active,
+    .now_ms = runtime_now_ms,
 };
 
 static void worker_complete_runtime_operation(void)
@@ -599,25 +608,23 @@ static esp_err_t worker_start_with_retry(uint64_t current_ms)
     return err;
 }
 
-static void worker_schedule_destroy_retry(ts_destroy_retry_mode_t mode,
-                                          uint64_t current_ms)
+static void worker_schedule_destroy_retry(
+    ts_claw_runtime_destroy_retry_mode_t mode,
+    uint64_t current_ms)
 {
-    if (mode == TS_DESTROY_RETRY_STOP ||
-        s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE) {
-        s_ts.destroy_retry_mode = mode;
-    }
-    s_ts.destroy_retry_ms = current_ms + TS_CLAW_DESTROY_RETRY_MS;
+    ts_claw_runtime_destroy_retry_schedule(
+        &s_ts.destroy_retry, mode, current_ms, TS_CLAW_DESTROY_RETRY_MS);
 }
 
 static esp_err_t worker_restart_microlink(void)
 {
     esp_err_t err = worker_destroy_microlink();
     if (err != ESP_OK) {
-        worker_schedule_destroy_retry(TS_DESTROY_RETRY_RESTART, now_ms());
+        worker_schedule_destroy_retry(
+            TS_CLAW_RUNTIME_DESTROY_RETRY_RESTART, now_ms());
         return err;
     }
-    s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
-    s_ts.destroy_retry_ms = 0u;
+    ts_claw_runtime_destroy_retry_clear(&s_ts.destroy_retry);
     if (worker_start_is_allowed()) {
         return worker_start_with_retry(now_ms());
     } else {
@@ -695,19 +702,29 @@ static void worker_consume_pending_wifi(void)
     bool handle_wifi = false;
     bool has_ip = false;
     esp_netif_t *sta_netif = NULL;
+    void *pending_netif = NULL;
 
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    if (s_ts.wifi_event_pending) {
-        s_ts.wifi_event_pending = false;
-        handle_wifi = true;
-        has_ip = s_ts.wifi_has_ip;
-        sta_netif = s_ts.sta_netif;
-    }
+    handle_wifi = ts_claw_runtime_wifi_pending_take(
+        &s_ts.wifi_pending,
+        ts_claw_runtime_control_is_active(&s_ts.runtime_control),
+        &has_ip, &pending_netif);
+    sta_netif = (esp_netif_t *)pending_netif;
     xSemaphoreGive(s_ts.lock);
 
     if (handle_wifi) {
         worker_handle_wifi_changed(has_ip, sta_netif);
     }
+}
+
+static bool worker_wifi_up_is_deferred(bool runtime_active)
+{
+    bool deferred = false;
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    deferred = runtime_active && s_ts.wifi_pending.pending &&
+               s_ts.wifi_pending.has_ip;
+    xSemaphoreGive(s_ts.lock);
+    return deferred;
 }
 
 static void worker_try_start_retry(uint64_t current_ms)
@@ -726,21 +743,20 @@ static void worker_try_start_retry(uint64_t current_ms)
 
 static void worker_try_destroy_retry(uint64_t current_ms)
 {
-    if (s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE ||
-        current_ms < s_ts.destroy_retry_ms) {
+    if (!ts_claw_runtime_destroy_retry_due(&s_ts.destroy_retry, current_ms)) {
         return;
     }
 
-    const ts_destroy_retry_mode_t mode = s_ts.destroy_retry_mode;
+    const ts_claw_runtime_destroy_retry_mode_t mode = s_ts.destroy_retry.mode;
     esp_err_t err = worker_destroy_microlink();
     if (err != ESP_OK) {
-        s_ts.destroy_retry_ms = now_ms() + TS_CLAW_DESTROY_RETRY_MS;
+        worker_schedule_destroy_retry(mode, now_ms());
         return;
     }
 
-    s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
-    s_ts.destroy_retry_ms = 0u;
-    if (mode == TS_DESTROY_RETRY_RESTART && worker_start_is_allowed()) {
+    ts_claw_runtime_destroy_retry_clear(&s_ts.destroy_retry);
+    if (mode == TS_CLAW_RUNTIME_DESTROY_RETRY_RESTART &&
+        worker_start_is_allowed()) {
         (void)worker_start_with_retry(now_ms());
     }
 }
@@ -878,7 +894,8 @@ static void worker_manage_exit_probe(uint64_t current_ms)
     ts_claw_route_hook_set_netifs(sta_netif, wg_netif);
     ts_claw_route_hook_set_tunnel_available(tunnel_available);
 
-    const bool ready = s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE &&
+    const bool ready = s_ts.destroy_retry.mode ==
+                           TS_CLAW_RUNTIME_DESTROY_RETRY_NONE &&
                        s_ts.desired_exit_node_ip != 0u && tunnel_available &&
                        s_ts.upstream_pinned &&
                        microlink_selected_exit_ready(s_ts.ml);
@@ -965,14 +982,15 @@ static void worker_sample_resources(uint64_t current_ms)
         s_ts.next_start_retry_ms = 0u;
         esp_err_t err = worker_destroy_microlink();
         if (err != ESP_OK) {
-            worker_schedule_destroy_retry(TS_DESTROY_RETRY_STOP, now_ms());
+            worker_schedule_destroy_retry(
+                TS_CLAW_RUNTIME_DESTROY_RETRY_STOP, now_ms());
         } else {
-            s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
-            s_ts.destroy_retry_ms = 0u;
+            ts_claw_runtime_destroy_retry_clear(&s_ts.destroy_retry);
             set_last_error("resource guard stopped tailscale");
         }
     } else if (action == TS_RESOURCE_GUARD_RETRY) {
-        const bool started = s_ts.destroy_retry_mode == TS_DESTROY_RETRY_NONE &&
+        const bool started = s_ts.destroy_retry.mode ==
+                                 TS_CLAW_RUNTIME_DESTROY_RETRY_NONE &&
                              s_ts.ml == NULL && worker_start_is_allowed() &&
                              worker_start_microlink() == ESP_OK;
         ts_resource_guard_retry_completed(&s_ts.resource_guard, current_ms, started);
@@ -1129,11 +1147,11 @@ static void worker_handle_event(const ts_event_t *event)
         s_ts.next_start_retry_ms = 0u;
         result = worker_destroy_microlink();
         if (result != ESP_OK) {
-            worker_schedule_destroy_retry(TS_DESTROY_RETRY_STOP, now_ms());
+            worker_schedule_destroy_retry(
+                TS_CLAW_RUNTIME_DESTROY_RETRY_STOP, now_ms());
             break;
         }
-        s_ts.destroy_retry_mode = TS_DESTROY_RETRY_NONE;
-        s_ts.destroy_retry_ms = 0u;
+        ts_claw_runtime_destroy_retry_clear(&s_ts.destroy_retry);
         result = microlink_factory_reset();
         break;
     default:
@@ -1163,16 +1181,25 @@ static void ts_claw_worker(void *arg)
         const uint64_t current_ms = now_ms();
         const bool runtime_active =
             ts_claw_runtime_control_is_active(&s_ts.runtime_control);
+        const bool wifi_up_deferred =
+            worker_wifi_up_is_deferred(runtime_active);
         if (!runtime_active) {
             worker_try_destroy_retry(current_ms);
             worker_try_start_retry(current_ms);
         }
-        worker_try_pin_upstream(current_ms);
-        worker_manage_exit_probe(current_ms);
+        if (!wifi_up_deferred) {
+            worker_try_pin_upstream(current_ms);
+            worker_manage_exit_probe(current_ms);
+        }
         worker_refresh_status();
         ts_claw_runtime_control_advance(&s_ts.runtime_control, current_ms);
         worker_complete_runtime_operation();
-        if (!ts_claw_runtime_control_is_active(&s_ts.runtime_control)) {
+        const bool runtime_still_active =
+            ts_claw_runtime_control_is_active(&s_ts.runtime_control);
+        if (runtime_active && !runtime_still_active) {
+            worker_consume_pending_wifi();
+        }
+        if (!runtime_still_active) {
             worker_check_error(current_ms);
             worker_sample_resources(current_ms);
         }
@@ -1251,10 +1278,8 @@ esp_err_t ts_claw_notify_wifi(bool sta_has_ip, esp_netif_t *sta_netif)
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     s_ts.wifi_has_ip = sta_has_ip;
     s_ts.sta_netif = sta_has_ip ? sta_netif : NULL;
-    if (!s_ts.wifi_event_pending) {
-        s_ts.wifi_event_pending = true;
-        send_event = true;
-    }
+    send_event = ts_claw_runtime_wifi_pending_record(
+        &s_ts.wifi_pending, sta_has_ip, sta_netif);
     xSemaphoreGive(s_ts.lock);
 
     const ts_event_t event = {.type = TS_EVENT_WIFI_CHANGED};
