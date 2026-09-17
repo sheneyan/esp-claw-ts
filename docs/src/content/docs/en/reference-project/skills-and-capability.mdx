@@ -60,7 +60,7 @@ The `tailscale_network` Skill binds `metadata.cap_groups: ["cap_tailscale"]`, so
 
 Its read tools expose device status, Exit Node candidates, and bounded DERP relay diagnostics. DERP telemetry describes this device's relay path; it is not an Internet traceroute.
 
-Its mutation tools require an explicit request from the current user and `user_confirmed: true`. Hostname, auth key, login server, enablement, and device identity stay on the settings page; activating the Skill does not grant those mutations.
+Its mutation tools require an explicit request from the current user and `user_confirmed: true`. This is an intent guard, not authentication or authorization; direct HTTP mutation routes add no auth wrapper and rely on trusted LAN exposure plus tailnet ACLs or grants. Hostname, auth key, login server, enablement, and maximum peers stay on the settings page. Device identity erasure/reset requires the physical factory-reset path; activating the Skill grants neither category of mutation.
 
 <Aside type="tip">
   A capability group without complex usage can skip a Skill and be added to `claw_cap_set_llm_visible_groups` for always-on exposure.

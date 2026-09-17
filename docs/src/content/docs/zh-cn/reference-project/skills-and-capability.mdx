@@ -60,7 +60,7 @@ Skill 文档不再注入系统提示词，而是通过工具返回值进入上�
 
 其中读取工具提供设备状态、Exit Node 候选及数量有上限的 DERP 中继诊断。DERP 遥测描述本设备的中继路径，并不是互联网 traceroute。
 
-变更工具要求当前用户明确提出请求，并传入 `user_confirmed: true`。主机名、Auth Key、登录服务器、启用状态和设备身份仍只能在设置页面管理；激活 Skill 不会获得这些修改能力。
+变更工具要求当前用户明确提出请求，并传入 `user_confirmed: true`。这只是意图保护，不是身份认证或访问授权；直接 HTTP 变更路由没有额外认证封装，依赖可信局域网暴露方式及 tailnet ACL 或 grants。主机名、Auth Key、登录服务器、启用状态和最大节点数仍只能在设置页面管理。清除或重置设备身份必须走物理恢复出厂路径；激活 Skill 不会获得上述任一类修改能力。
 
 <Aside type="tip">
   若某 Capability Group 不涉及复杂用法，也可不配置对应 Skill，直接在 `claw_cap_set_llm_visible_groups` 中设为初始可见，无需经由 Skill 激活。

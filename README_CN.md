@@ -51,11 +51,14 @@
 `tailscale_list_exit_nodes`、`tailscale_set_exit_node`、
 `tailscale_clear_exit_node` 和 `tailscale_reconnect`。状态结果包含有界的 DERP
 中继诊断；这些数据描述本设备的 Tailscale 中继路径，不是互联网 traceroute。智能体执行
-变更必须基于当前用户的明确请求，并传入 `user_confirmed: true`；用户直接点击网页按钮
-本身就是确认。智能体与网页共用同一个实时控制服务。Exit Node 的设置和清除无需重启、
+变更必须基于当前用户的明确请求，并传入 `user_confirmed: true`；用户在网页中选择或清除
+Exit Node 会直接记录该操作意图。智能体与网页共用同一个实时控制服务。Exit Node 的设置
+和清除无需重启、
 在确认成功后才持久化；离线节点和空选择不会被静默接受，失败结果可能显示 fallback 或
-rollback 状态。主机名、Auth Key、登录服务器、启用状态和设备身份仍只能通过设置页面
-修改。完整行为及失败边界请查看指南。
+rollback 状态。这里的确认只是意图保护，不是身份认证或访问授权；直接 HTTP 变更路由
+没有额外认证封装，因此应使用可信局域网以及 tailnet ACL 或 grants 限制可达范围。
+主机名、Auth Key、登录服务器、启用状态和最大节点数仍只能通过设置页面修改。清除或
+重置设备身份必须走物理恢复出厂路径，不属于智能体操作。完整行为及失败边界请查看指南。
 
 本项目与乐鑫、Tailscale 均无隶属或背书关系。原始 ESP-Claw 项目由
 [`espressif/esp-claw`](https://github.com/espressif/esp-claw) 维护。

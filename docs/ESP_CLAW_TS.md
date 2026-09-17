@@ -225,12 +225,22 @@ action, so its HTTP request does not use the agent-only `user_confirmed` field.
 Reconnect is available through the confirmed `tailscale_reconnect` agent tool
 and the `/api/tailscale/reconnect` HTTP API, not as a page button. The web,
 agent-tool, and direct-API paths call the same serialized live-control service
-and report the same operational result model.
+and therefore share its behavior, but their transport response schemas differ.
+For example, HTTP mutation results expose `rollback_attempted` and
+`rollback_recovered`, while the Capability result does not expose those fields.
+
+`user_confirmed` and a direct web selection record current action intent only;
+they are not authentication or authorization. The direct mutation HTTP routes
+do not add an authentication wrapper. Restrict access to the device with a
+trusted LAN exposure model and tailnet ACLs or grants; anyone who can reach
+those HTTP routes may otherwise invoke them.
 
 The agent cannot change the device hostname, auth key, login server, enabled
-state, or device identity. Those remain settings-only operations in the web
-interface. Registration, server validation, and identity management are not
-agent tools.
+state, or maximum peers. Those remain settings-only operations in the web
+interface. Erasing/resetting device identity is separate: it requires the
+physical factory-reset path described above, and is not an agent or ordinary
+settings-page operation. Registration and server validation are not agent
+tools.
 
 ## Exit Node Behavior
 

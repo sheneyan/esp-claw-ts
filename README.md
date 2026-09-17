@@ -53,14 +53,18 @@ Activating `tailscale_network` exposes five tools: `tailscale_status`,
 `tailscale_clear_exit_node`, and `tailscale_reconnect`. Status includes bounded
 DERP relay diagnostics; these measurements describe this device's Tailscale
 relay path, not an Internet traceroute. Agent mutations require an explicit
-request from the current user and `user_confirmed: true`; a direct click in the
-web interface is the user's confirmation. The agent and web interface use the
-same live-control service. Exit Node set/clear takes effect without a reboot and
+request from the current user and `user_confirmed: true`; selecting or clearing
+an Exit Node in the web interface directly records that action intent. The
+agent and web interface use the same live-control service. Exit Node set/clear
+takes effect without a reboot and
 is persisted only after verified success; offline nodes and empty selections
 are not silently accepted, and failures can report fallback or rollback state.
-Hostname, auth key, login server, enablement, and device identity remain
-settings-only operations. See the guide for the complete behavior and failure
-boundaries.
+This confirmation is an intent guard, not authentication or authorization; the
+direct HTTP mutation routes add no auth wrapper, so protect reachability with a
+trusted LAN and tailnet ACLs or grants. Hostname, auth key, login server,
+enablement, and maximum peers remain settings-only operations. Device identity
+erasure/reset requires the physical factory-reset path and is not an agent
+operation. See the guide for the complete behavior and failure boundaries.
 
 This project is not affiliated with or endorsed by Espressif or Tailscale.
 The original ESP-Claw project is maintained at
