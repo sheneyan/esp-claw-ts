@@ -33,6 +33,21 @@
 
 </div>
 
+> [!IMPORTANT]
+> **ESP-Claw TS** 是 ESP-Claw 的非官方社区分支，增加了可选的 Tailscale
+> 兼容私网连接能力。目前唯一经过实机验证的目标是 **ESP32-S3 N16R8**。
+> 编译或烧录前请阅读 [ESP-Claw TS 中文指南](./docs/ESP_CLAW_TS_CN.md)。
+
+### 本分支增加的能力
+
+- 通过 tailnet 访问 ESP-Claw 网页和 WebSocket 聊天
+- 设备自身的出站流量可选使用 exit node
+- 所选 exit node 不可用时回退普通 Wi-Fi
+- 专用的 `esp32_s3_n16r8_ts_claw` 板型配置
+
+本项目与乐鑫、Tailscale 均无隶属或背书关系。原始 ESP-Claw 项目由
+[`espressif/esp-claw`](https://github.com/espressif/esp-claw) 维护。
+
 **ESP-Claw** 是乐鑫推出的面向物联网设备的 **Chat Coding「聊天造物」** 式 AI Agent 框架，以对话定义设备行为，在乐鑫芯片上本地完成感知、决策与执行的完整闭环。ESP-Claw 自 OpenClaw 理念出发，用 C 语言重新实现，轻盈、智能、成长。仅需一块几美元的 ESP32 系列芯片，便可体验 ESP-Claw 的轻灵特性。
 
 <div align="center">

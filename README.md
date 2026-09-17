@@ -33,6 +33,23 @@
 
 </div>
 
+> [!IMPORTANT]
+> **ESP-Claw TS** is an unofficial community fork of ESP-Claw with optional
+> Tailscale-compatible private networking. The currently tested target is an
+> **ESP32-S3 N16R8** board. See the [ESP-Claw TS guide](./docs/ESP_CLAW_TS.md)
+> before building or flashing.
+
+### What this fork adds
+
+- Tailnet access to the ESP-Claw web interface and WebSocket chat
+- Optional exit-node use for device-originated traffic
+- Wi-Fi fallback when the selected exit node is unavailable
+- A dedicated `esp32_s3_n16r8_ts_claw` board profile
+
+This project is not affiliated with or endorsed by Espressif or Tailscale.
+The original ESP-Claw project is maintained at
+[`espressif/esp-claw`](https://github.com/espressif/esp-claw).
+
 **ESP-Claw** is Espressif's **Chat Coding** AI agent framework for IoT devices. It defines device behavior through conversation and completes the full loop of sensing, decision-making, and execution locally on Espressif chips. Inspired by the OpenClaw concept and reimplemented in C, ESP-Claw is lightweight, intelligent, and continuously evolving. With just an ESP32-series chip that costs only a few dollars, you can experience what makes ESP-Claw so nimble.
 
 <div align="center">
