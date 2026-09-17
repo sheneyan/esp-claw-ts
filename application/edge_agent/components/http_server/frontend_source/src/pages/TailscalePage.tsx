@@ -218,6 +218,7 @@ export const TailscalePage: Component = () => {
         operation = await clearTailscaleExitNode();
       }
       operationSucceeded = true;
+      selectedExitInitialized = true;
       setSelectedExitNode(nextNode ? operation.selected_ip || nextNode : '');
       setMutationNotice(t('tailscaleExitNodeUpdated') as string);
     } catch (error) {

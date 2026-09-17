@@ -21,6 +21,8 @@ const config = vi.hoisted(() => ({
     tailscale_auth_key_set: true,
   },
   loaded: true,
+  setLoaded(_value: boolean): void {},
+  notifyValues(): void {},
   reload: vi.fn(),
   save: vi.fn(),
   discard: vi.fn(),
@@ -35,12 +37,30 @@ vi.mock('../api/client', async (importOriginal) => ({
   clearTailscaleExitNode: api.clearExitNode,
 }));
 
-vi.mock('../state/config', () => ({
-  appConfig: () => config.values,
-  isGroupLoaded: () => config.loaded,
-  patchConfigLocal: (patch: Record<string, unknown>) => Object.assign(config.values, patch),
-  reloadConfigGroups: config.reload,
-}));
+vi.mock('../state/config', async () => {
+  const { createSignal } = await import('solid-js');
+  const [loaded, setLoaded] = createSignal(config.loaded);
+  const [valuesVersion, setValuesVersion] = createSignal(0);
+  config.setLoaded = (value: boolean) => {
+    config.loaded = value;
+    setLoaded(value);
+  };
+  config.notifyValues = () => {
+    setValuesVersion((version) => version + 1);
+  };
+  return {
+    appConfig: () => {
+      valuesVersion();
+      return config.values;
+    },
+    isGroupLoaded: () => loaded(),
+    patchConfigLocal: (patch: Record<string, unknown>) => {
+      Object.assign(config.values, patch);
+      setValuesVersion((version) => version + 1);
+    },
+    reloadConfigGroups: config.reload,
+  };
+});
 
 vi.mock('../state/configTab', () => ({
   createConfigTab: (options: {
@@ -108,7 +128,7 @@ const offlineNode = {
 
 describe('TailscalePage Exit Node control', () => {
   beforeEach(() => {
-    config.loaded = true;
+    config.setLoaded(true);
     config.values.tailscale_hostname = 'esp-claw';
     config.values.tailscale_auth_key = '';
     config.values.tailscale_login_server = '';
@@ -137,7 +157,7 @@ describe('TailscalePage Exit Node control', () => {
   });
 
   it('keeps the Exit Node control visible while configuration is loading', async () => {
-    config.loaded = false;
+    config.setLoaded(false);
     render(() => <TailscalePage />);
 
     expect(await screen.findByLabelText('Exit Node')).toBeInTheDocument();
@@ -269,7 +289,8 @@ describe('TailscalePage Exit Node control', () => {
     );
   });
 
-  it('keeps the confirmed selection when focused config verification fails', async () => {
+  it('keeps the confirmed selection over a delayed stale initial config response', async () => {
+    config.setLoaded(false);
     api.fetchExitNodes.mockResolvedValue([onlineNode]);
     api.fetchConfigGroup.mockRejectedValue(new Error('Config refresh failed'));
     render(() => <TailscalePage />);
@@ -281,6 +302,16 @@ describe('TailscalePage Exit Node control', () => {
     await waitFor(() => expect(select).toBeEnabled());
     expect(select).toHaveValue(onlineNode.ip);
     expect(screen.getByRole('status')).toHaveTextContent('Exit Node selection updated.');
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Saved selection could not be verified from configuration.',
+    );
+
+    config.values.tailscale_exit_node = '';
+    config.notifyValues();
+    config.setLoaded(true);
+    await Promise.resolve();
+
+    expect(select).toHaveValue(onlineNode.ip);
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Saved selection could not be verified from configuration.',
     );
