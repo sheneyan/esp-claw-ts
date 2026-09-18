@@ -16,7 +16,7 @@ static app_config_tailscale_view_t valid_config(void)
 {
     return (app_config_tailscale_view_t) {
         .enabled = "true",
-        .auth_key = "tskey-auth-super-secret",
+        .auth_key = "unit-test-auth-key",
         .hostname = "ts-claw",
         .login_server = "https://login.tailscale.com",
         .exit_node = "100.70.80.90",
@@ -192,12 +192,12 @@ static void test_null_fields_are_safe_and_messages_do_not_leak_keys(void)
 
     config.hostname = NULL;
     CHECK(!validate(&config, message, sizeof(message)));
-    CHECK(strstr(message, "tskey-auth-super-secret") == NULL);
+    CHECK(strstr(message, "unit-test-auth-key") == NULL);
 
     config = valid_config();
     config.max_peers = NULL;
     CHECK(!validate(&config, message, sizeof(message)));
-    CHECK(strstr(message, "tskey-auth-super-secret") == NULL);
+    CHECK(strstr(message, "unit-test-auth-key") == NULL);
 
     config = valid_config();
     config.auth_key = NULL;
