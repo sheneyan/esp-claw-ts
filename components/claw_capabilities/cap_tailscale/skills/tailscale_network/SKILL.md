@@ -15,7 +15,7 @@ Diagnosis is read-only by default. A mutation is allowed only for an explicit re
 
 DERP is a relay path, not automatically a failure. Never describe fallback, pending, rollback, or partial application as success.
 
-When status reports `dns_egress: "sta_bypass"`, website traffic uses the selected Exit Node but DNS uses local Wi-Fi for compatibility. Sites normally see the Exit Node public IP; the local resolver or ISP may still observe queried domains, and local DNS/CDN/geolocation or pollution may affect results. This is not a privacy-VPN mode. `dns_bypass_count` is bounded; resolver IPs are intentionally not exposed. This is a fixed policy with no model-callable control.
+When status reports `egress: "exit"` together with either `dns_egress: "sta"` or `dns_egress: "sta_bypass"`, website traffic uses the selected Exit Node but DNS uses local Wi-Fi for compatibility. `sta` means the resolver is already local/private and needs no explicit public-IP bypass; `sta_bypass` means one or more public resolver IPs are explicitly kept on STA. Sites normally see the Exit Node public IP; the local resolver or ISP may still observe queried domains, and local DNS/CDN/geolocation or pollution may affect results. This is not a privacy-VPN mode. `dns_bypass_count` counts only bounded public exact-IP bypasses; resolver IPs are intentionally not exposed. Do not infer local-DNS compatibility from `dns_egress: "sta"` alone when `egress` is not `exit`. This is a fixed policy with no model-callable control.
 
 Hostname, auth key, login server, enablement, and identity reset remain on the settings page and are unavailable through these tools. This device diagnoses and controls only its own runtime; it does not administer the whole tailnet.
 

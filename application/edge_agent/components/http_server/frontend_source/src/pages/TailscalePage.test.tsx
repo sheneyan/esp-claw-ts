@@ -171,10 +171,37 @@ describe('TailscalePage Exit Node control', () => {
     });
     render(() => <TailscalePage />);
 
-    expect(await screen.findByText('Local Wi-Fi DNS (2 resolvers)')).toBeInTheDocument();
+    expect(await screen.findByText('Local Wi-Fi DNS (2 public bypasses)')).toBeInTheDocument();
     expect(
       screen.getByText(/DNS queries use local Wi-Fi and may be visible to the local resolver or ISP/i),
     ).toBeInTheDocument();
+  });
+
+  it('discloses local DNS for an active Exit Node with only private resolvers', async () => {
+    api.fetchStatus.mockResolvedValue({
+      ...connectedStatus,
+      exit_node: onlineNode.ip,
+      exit_state: 'active',
+      egress: 'exit',
+      dns_egress: 'sta',
+      dns_bypass_active: false,
+      dns_bypass_count: 0,
+    });
+    render(() => <TailscalePage />);
+
+    expect(await screen.findByText('Local Wi-Fi DNS (0 public bypasses)')).toBeInTheDocument();
+    expect(
+      screen.getByText(/DNS queries use local Wi-Fi and may be visible to the local resolver or ISP/i),
+    ).toBeInTheDocument();
+  });
+
+  it('does not show a local-DNS warning during ordinary STA egress', async () => {
+    render(() => <TailscalePage />);
+
+    await screen.findByText('DNS Egress');
+    expect(
+      screen.queryByText(/DNS queries use local Wi-Fi and may be visible to the local resolver or ISP/i),
+    ).not.toBeInTheDocument();
   });
 
   it('keeps the Exit Node control visible while configuration is loading', async () => {

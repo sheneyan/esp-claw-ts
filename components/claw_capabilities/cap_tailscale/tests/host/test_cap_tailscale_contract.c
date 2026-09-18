@@ -359,6 +359,16 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
         TEST_CHECK(strstr(output, forbidden[index]) == NULL);
     }
 
+    snprintf(status.egress, sizeof(status.egress), "exit");
+    snprintf(status.dns_egress, sizeof(status.dns_egress), "sta");
+    status.dns_bypass_active = false;
+    status.dns_bypass_count = 0u;
+    TEST_CHECK(cap_tailscale_render_status_json(&status, output, sizeof(output)) == ESP_OK);
+    TEST_CHECK(strstr(output, "\"egress\":\"exit\"") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_egress\":\"sta\"") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_bypass_active\":false") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_bypass_count\":0") != NULL);
+
     memset(tiny_output, 'x', sizeof(tiny_output));
     TEST_CHECK(cap_tailscale_render_status_json(&status, tiny_output, sizeof(tiny_output)) == ESP_ERR_INVALID_ARG);
     TEST_CHECK(tiny_output[0] == '\0');

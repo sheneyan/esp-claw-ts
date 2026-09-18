@@ -115,7 +115,7 @@ export const en = {
   tailscaleExitState: 'Exit Node State',
   tailscaleActualEgress: 'Actual Egress',
   tailscaleDnsEgress: 'DNS Egress',
-  tailscaleDnsLocalValue: 'Local Wi-Fi DNS ({count} resolvers)',
+  tailscaleDnsLocalValue: 'Local Wi-Fi DNS ({count} public bypasses)',
   tailscaleDnsCompatibilityWarning:
     'Compatibility mode: DNS queries use local Wi-Fi and may be visible to the local resolver or ISP. Website traffic still uses the Exit Node.',
   tailscaleLastError: 'Last Error',

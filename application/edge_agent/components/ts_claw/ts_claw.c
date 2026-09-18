@@ -1,6 +1,7 @@
 #define TS_CLAW_DIAGNOSTICS_INTERNAL
 #include "ts_claw_diagnostics.h"
 #include "ts_claw.h"
+#include "ts_claw_dns_policy.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -176,51 +177,50 @@ static void set_exit_usable(bool usable)
     }
 }
 
+static bool read_lwip_dns_server(size_t index,
+                                 ts_claw_dns_server_t *server,
+                                 void *ctx)
+{
+    (void)ctx;
+    if (server == NULL || index >= DNS_MAX_SERVERS) {
+        return false;
+    }
+
+    const ip_addr_t *address = dns_getserver((u8_t)index);
+    server->present = address != NULL;
+    server->ipv4 = address != NULL && IP_IS_V4(address);
+    server->host_order_ip = server->ipv4
+                                ? lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(address)))
+                                : 0u;
+    return true;
+}
+
 static void refresh_dns_bypass(void)
 {
-    uint32_t resolvers[TS_CLAW_DNS_BYPASS_MAX] = {0};
-    size_t count = 0u;
-
-    for (size_t i = 0; i < DNS_MAX_SERVERS && count < TS_CLAW_DNS_BYPASS_MAX; ++i) {
-        const ip_addr_t *server = dns_getserver((u8_t)i);
-        if (server == NULL || !IP_IS_V4(server)) {
-            continue;
-        }
-        const uint32_t resolver = lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(server)));
-        if (resolver == 0u || ts_route_is_cgnat(resolver) ||
-            !ts_route_is_public_unicast(resolver)) {
-            continue;
-        }
-        bool duplicate = false;
-        for (size_t j = 0; j < count; ++j) {
-            duplicate = duplicate || resolvers[j] == resolver;
-        }
-        if (!duplicate) {
-            resolvers[count++] = resolver;
-        }
-    }
-
     const ts_claw_route_state_t old_state = ts_claw_route_hook_get_state();
-    bool changed = old_state.dns_bypass_count != count;
-    for (size_t i = 0; !changed && i < count; ++i) {
-        changed = old_state.dns_bypass[i] != resolvers[i];
+    ts_claw_dns_refresh_result_t result = {0};
+    ts_claw_dns_refresh(read_lwip_dns_server, NULL, DNS_MAX_SERVERS,
+                        ts_claw_route_hook_set_dns_bypass, &result);
+
+    bool changed = old_state.dns_bypass_count != result.bypass_count;
+    for (size_t i = 0; !changed && i < result.bypass_count; ++i) {
+        changed = old_state.dns_bypass[i] != result.bypass[i];
     }
-    ts_claw_route_hook_set_dns_bypass(resolvers, count);
 
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    s_ts.dns_bypass_count = (uint8_t)count;
+    s_ts.dns_bypass_count = (uint8_t)result.bypass_count;
     xSemaphoreGive(s_ts.lock);
 
     if (changed) {
         ESP_LOGI(TAG, "Exit Node DNS compatibility bypass: %u public resolver(s)",
-                 (unsigned)count);
-        for (size_t i = 0; i < count; ++i) {
+                 (unsigned)result.bypass_count);
+        for (size_t i = 0; i < result.bypass_count; ++i) {
             ESP_LOGI(TAG, "DNS resolver[%u]=%u.%u.%u.%u via STA",
                      (unsigned)i,
-                     (unsigned)((resolvers[i] >> 24) & 0xffu),
-                     (unsigned)((resolvers[i] >> 16) & 0xffu),
-                     (unsigned)((resolvers[i] >> 8) & 0xffu),
-                     (unsigned)(resolvers[i] & 0xffu));
+                     (unsigned)((result.bypass[i] >> 24) & 0xffu),
+                     (unsigned)((result.bypass[i] >> 16) & 0xffu),
+                     (unsigned)((result.bypass[i] >> 8) & 0xffu),
+                     (unsigned)(result.bypass[i] & 0xffu));
         }
     }
 }

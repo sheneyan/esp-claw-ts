@@ -175,6 +175,14 @@ export const TailscalePage: Component = () => {
   const authKeyConfigured = () =>
     appConfig().tailscale_auth_key_set ?? status()?.auth_key_set ?? false;
 
+  const localDnsCompatibilityActive = createMemo(() => {
+    const current = status();
+    return (
+      current?.egress === 'exit' &&
+      (current.dns_egress === 'sta' || current.dns_egress === 'sta_bypass')
+    );
+  });
+
   const selectedExitIsListed = createMemo(() =>
     exitNodes().some((node) => node.ip === selectedExitNode()),
   );
@@ -307,7 +315,7 @@ export const TailscalePage: Component = () => {
             <InfoRow
               label={t('tailscaleDnsEgress') as string}
               value={
-                status()?.dns_bypass_active
+                localDnsCompatibilityActive()
                   ? tf('tailscaleDnsLocalValue', {
                       count: status()!.dns_bypass_count,
                     })
@@ -316,7 +324,7 @@ export const TailscalePage: Component = () => {
             />
             <InfoRow label={t('tailscaleLastError') as string} value={status()?.last_error} />
           </div>
-          <Show when={status()?.dns_bypass_active}>
+          <Show when={localDnsCompatibilityActive()}>
             <div class="pt-3">
               <Banner
                 kind="info"

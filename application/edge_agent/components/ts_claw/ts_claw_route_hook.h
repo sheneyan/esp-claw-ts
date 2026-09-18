@@ -1,12 +1,12 @@
 #pragma once
 
+#include "ts_claw_dns_policy.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 struct netif;
-
-#define TS_CLAW_DNS_BYPASS_MAX 3u
 
 typedef struct {
     struct netif *sta_netif;

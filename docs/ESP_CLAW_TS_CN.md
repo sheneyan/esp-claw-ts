@@ -231,6 +231,9 @@ HTTP 变更路由没有额外认证封装。应以可信局域网暴露方式和
 `dns_egress`、`dns_bypass_active` 和有界的 `dns_bypass_count`，但不会把解析器地址暴露
 给智能体或网页。CGNAT 目标（包括 `100.100.100.100`）即使出现在解析器表中也始终走
 WireGuard；私网和链路本地解析器原本就会按本地路由规则走 STA。
+因此 `egress: "exit"` 与 `dns_egress: "sta"` 同时出现时，DNS 仍走本地 Wi-Fi；它只
+表示没有公网解析器需要额外的精确 IP 旁路。`dns_bypass_count` 只统计这些公网精确 IP
+旁路，并不代表全部解析器数量。
 
 网站通常看到的是 Exit Node 公网 IP，但 DNS 查询使用本地 Wi-Fi。本地解析器或运营商
 可以看到查询域名；本地 DNS 返回、CDN 地理调度或 DNS 污染可能影响可达性或内容选择。

@@ -267,6 +267,9 @@ path. Other public traffic continues through the Exit Node. Status exposes
 addresses are not exposed to the agent or page. CGNAT destinations, including
 `100.100.100.100`, always remain on WireGuard even if present in the resolver
 table. Private and link-local resolvers already use STA under the local rule.
+Therefore `egress: "exit"` with `dns_egress: "sta"` still means local-Wi-Fi
+DNS; it only means no public resolver needed an explicit exact-IP bypass.
+`dns_bypass_count` counts those public exact-IP bypasses, not all resolvers.
 
 Sites normally see the Exit Node public IP, but DNS queries use local Wi-Fi.
 The local resolver or ISP can observe queried domains; local DNS answers, CDN

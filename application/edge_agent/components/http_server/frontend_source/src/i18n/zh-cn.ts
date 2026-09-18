@@ -113,7 +113,7 @@ export const zhCn: Dict = {
   tailscaleExitState: 'Exit Node 状态',
   tailscaleActualEgress: '实际出口',
   tailscaleDnsEgress: 'DNS 出口',
-  tailscaleDnsLocalValue: '本地 Wi-Fi DNS（{count} 个解析器）',
+  tailscaleDnsLocalValue: '本地 Wi-Fi DNS（{count} 个公网精确旁路）',
   tailscaleDnsCompatibilityWarning:
     '兼容模式：DNS 查询走本地 Wi-Fi，本地解析器或运营商可能看到查询域名；网站流量仍通过 Exit Node。',
   tailscaleLastError: '最近错误',
