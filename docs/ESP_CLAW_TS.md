@@ -36,6 +36,11 @@ The board profile assumes QIO 16 MB flash and octal 8 MB PSRAM. A board merely
 being labelled "ESP32-S3" is not enough; confirm the module and flash/PSRAM
 configuration before flashing.
 
+> **ESP-IDF version baseline:** ESP-IDF **5.5.4** is the recommended and
+> verified version for this project. The N16R8 firmware was built, flashed, and
+> physically validated with it. ESP-IDF 6.x is not part of the verified
+> baseline and may require additional compatibility work.
+
 ## Prerequisites
 
 Install these tools before building:
