@@ -67,13 +67,15 @@ enablement, and maximum peers remain settings-only operations. Device identity
 erasure/reset requires the physical factory-reset path and is not an agent
 operation. See the guide for the complete behavior and failure boundaries.
 
-When an Exit Node is active, ESP-Claw TS keeps the current Wi-Fi-provided DNS
-resolvers on the STA path while other public traffic uses the Exit Node. Sites
-normally see the Exit Node public IP, but the local resolver or ISP can observe
-queried domains, and local DNS answers, CDN geolocation, or DNS pollution may
-affect results. This is a compatibility policy, not a privacy-VPN mode. Because
-the route hook has no port information, all traffic to each captured public DNS
-server IP—not only DNS on TCP/UDP port 53—uses STA.
+When an Exit Node is active, ESP-Claw TS keeps local/private and captured public
+DNS resolvers on Wi-Fi STA while CGNAT resolvers use WireGuard. Status reports
+`sta`, `exit`, `mixed`, or `unavailable` for the actual resolver paths. Sites
+normally see the Exit Node public IP, but with `sta` or `mixed` the local
+resolver or ISP can observe some or all queried domains, and local DNS answers,
+CDN geolocation, or DNS pollution may affect results. This is a compatibility
+policy, not a privacy-VPN mode. Because the route hook has no port information,
+all traffic to each captured public DNS server IP—not only DNS on TCP/UDP port
+53—uses STA.
 
 This project is not affiliated with or endorsed by Espressif or Tailscale.
 The original ESP-Claw project is maintained at

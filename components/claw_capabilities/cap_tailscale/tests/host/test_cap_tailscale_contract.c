@@ -293,7 +293,7 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     snprintf(status.exit_node, sizeof(status.exit_node), "exit-sentinel");
     snprintf(status.exit_state, sizeof(status.exit_state), "state-sentinel");
     snprintf(status.egress, sizeof(status.egress), "egress-sentinel");
-    snprintf(status.dns_egress, sizeof(status.dns_egress), "sta_bypass");
+    snprintf(status.dns_egress, sizeof(status.dns_egress), "mixed");
     status.dns_bypass_active = true;
     status.dns_bypass_count = 2;
     snprintf(status.last_error, sizeof(status.last_error), "safe-error-sentinel");
@@ -334,7 +334,7 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     TEST_CHECK(strstr(output, "exit-sentinel") != NULL);
     TEST_CHECK(strstr(output, "\"state\":\"state-sentinel\"") != NULL);
     TEST_CHECK(strstr(output, "\"egress\":\"egress-sentinel\"") != NULL);
-    TEST_CHECK(strstr(output, "\"dns_egress\":\"sta_bypass\"") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_egress\":\"mixed\"") != NULL);
     TEST_CHECK(strstr(output, "\"dns_bypass_active\":true") != NULL);
     TEST_CHECK(strstr(output, "\"dns_bypass_count\":2") != NULL);
     TEST_CHECK(strstr(output, "safe-error-sentinel") != NULL);

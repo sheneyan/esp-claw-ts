@@ -226,18 +226,23 @@ HTTP 变更路由没有额外认证封装。应以可信局域网暴露方式和
 
 ### DNS 兼容策略
 
-当 `egress` 为 `exit` 时，ESP-Claw TS 会从 lwIP/DHCP 捕获当前 IPv4 DNS 解析器，并让
-命中的公网解析器目标继续走 Wi-Fi STA；其他公网流量仍走 Exit Node。状态中会提供
+当 `egress` 为 `exit` 时，ESP-Claw TS 会按实际路由分类 lwIP/DHCP 当前提供的 IPv4
+DNS：私网/链路本地解析器及捕获到的公网解析器走 Wi-Fi STA；CGNAT 解析器（包括
+`100.100.100.100`）走 WireGuard。其他公网流量仍走 Exit Node。状态提供
 `dns_egress`、`dns_bypass_active` 和有界的 `dns_bypass_count`，但不会把解析器地址暴露
-给智能体或网页。CGNAT 目标（包括 `100.100.100.100`）即使出现在解析器表中也始终走
-WireGuard；私网和链路本地解析器原本就会按本地路由规则走 STA。
-因此 `egress: "exit"` 与 `dns_egress: "sta"` 同时出现时，DNS 仍走本地 Wi-Fi；它只
-表示没有公网解析器需要额外的精确 IP 旁路。`dns_bypass_count` 只统计这些公网精确 IP
-旁路，并不代表全部解析器数量。
+给智能体或网页：
 
-网站通常看到的是 Exit Node 公网 IP，但 DNS 查询使用本地 Wi-Fi。本地解析器或运营商
-可以看到查询域名；本地 DNS 返回、CDN 地理调度或 DNS 污染可能影响可达性或内容选择。
-这是兼容性行为，不应描述为隐私 VPN。路由钩子只能看到目标 IP，无法识别端口，所以
+- `sta`：所有有效解析器均走 STA；
+- `exit`：所有有效解析器均走 WireGuard/Exit Node；
+- `mixed`：有效解析器同时存在两种路径；
+- `unavailable`：当前没有已知可用的解析器路径。
+
+`dns_bypass_count` 只统计公网精确 IP 的 STA 旁路，不统计私网、链路本地或 CGNAT
+解析器。网站通常看到的是 Exit Node 公网 IP；`sta` 模式下本地解析器或运营商可以看到
+查询域名，`mixed` 模式下可看到走本地路径的部分查询。DNS 返回、CDN 地理调度或 DNS
+污染可能影响可达性或内容选择。`exit` 不代表存在本地 DNS 泄漏；`unavailable` 表示
+域名解析可能失败。这是兼容性行为，不应描述为隐私 VPN。路由钩子只能看到目标 IP，
+无法识别端口，所以
 命中所捕获公网解析器 IP 的**全部流量**都会走 STA，并非只有 UDP/TCP 53 端口。
 Exit Node 生效期间会从 lwIP 刷新该列表；进入 fallback、清除或回滚切换、Wi-Fi 断开、
 运行时销毁时都会清空，避免遗留旧地址。

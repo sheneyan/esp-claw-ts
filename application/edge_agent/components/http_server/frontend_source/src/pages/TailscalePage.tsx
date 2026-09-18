@@ -175,13 +175,39 @@ export const TailscalePage: Component = () => {
   const authKeyConfigured = () =>
     appConfig().tailscale_auth_key_set ?? status()?.auth_key_set ?? false;
 
-  const localDnsCompatibilityActive = createMemo(() => {
+  const activeExitDnsMode = createMemo(() => {
     const current = status();
-    return (
-      current?.egress === 'exit' &&
-      (current.dns_egress === 'sta' || current.dns_egress === 'sta_bypass')
-    );
+    return current?.egress === 'exit' ? current.dns_egress : null;
   });
+
+  const dnsStatusValue = () => {
+    const current = status();
+    switch (activeExitDnsMode()) {
+      case 'sta':
+        return tf('tailscaleDnsLocalValue', { count: current?.dns_bypass_count ?? 0 });
+      case 'exit':
+        return t('tailscaleDnsExitValue') as string;
+      case 'mixed':
+        return tf('tailscaleDnsMixedValue', { count: current?.dns_bypass_count ?? 0 });
+      case 'unavailable':
+        return t('tailscaleDnsUnavailableValue') as string;
+      default:
+        return current?.dns_egress;
+    }
+  };
+
+  const dnsWarning = () => {
+    switch (activeExitDnsMode()) {
+      case 'sta':
+        return t('tailscaleDnsCompatibilityWarning') as string;
+      case 'mixed':
+        return t('tailscaleDnsMixedWarning') as string;
+      case 'unavailable':
+        return t('tailscaleDnsUnavailableWarning') as string;
+      default:
+        return null;
+    }
+  };
 
   const selectedExitIsListed = createMemo(() =>
     exitNodes().some((node) => node.ip === selectedExitNode()),
@@ -314,22 +340,13 @@ export const TailscalePage: Component = () => {
             <InfoRow label={t('tailscaleActualEgress') as string} value={status()?.egress} />
             <InfoRow
               label={t('tailscaleDnsEgress') as string}
-              value={
-                localDnsCompatibilityActive()
-                  ? tf('tailscaleDnsLocalValue', {
-                      count: status()!.dns_bypass_count,
-                    })
-                  : status()?.dns_egress
-              }
+              value={dnsStatusValue()}
             />
             <InfoRow label={t('tailscaleLastError') as string} value={status()?.last_error} />
           </div>
-          <Show when={localDnsCompatibilityActive()}>
+          <Show when={dnsWarning()}>
             <div class="pt-3">
-              <Banner
-                kind="info"
-                message={t('tailscaleDnsCompatibilityWarning') as string}
-              />
+              <Banner kind="info" message={dnsWarning()!} />
             </div>
           </Show>
         </StaticConfigBlock>

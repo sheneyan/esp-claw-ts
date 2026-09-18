@@ -61,11 +61,12 @@ rollback 状态。这里的确认只是意图保护，不是身份认证或访�
 主机名、Auth Key、登录服务器、启用状态和最大节点数仍只能通过设置页面修改。清除或
 重置设备身份必须走物理恢复出厂路径，不属于智能体操作。完整行为及失败边界请查看指南。
 
-启用 Exit Node 时，ESP-Claw TS 会让 Wi-Fi 当前提供的 DNS 解析器继续走 STA，其他公网
-流量走 Exit Node。网站通常看到的是 Exit Node 的公网 IP，但本地 DNS 解析器或运营商
-仍可能看到查询的域名，本地 DNS 返回、CDN 地理调度或 DNS 污染也可能影响结果。这是
-兼容性策略，不是隐私 VPN 模式。由于路由钩子看不到端口，命中所捕获公网 DNS 服务器
-IP 的全部流量都会走 STA，并非只有 TCP/UDP 53 端口。
+启用 Exit Node 时，ESP-Claw TS 会让本地/私网 DNS 与捕获到的公网 DNS 走 Wi-Fi STA，
+CGNAT DNS 则走 WireGuard；状态会按实际解析器路径报告 `sta`、`exit`、`mixed` 或
+`unavailable`。网站通常看到的是 Exit Node 的公网 IP，但在 `sta` 或 `mixed` 模式下，
+本地解析器或运营商仍可能看到部分或全部查询域名，本地 DNS 返回、CDN 地理调度或 DNS
+污染也可能影响结果。这是兼容性策略，不是隐私 VPN 模式。由于路由钩子看不到端口，
+命中所捕获公网 DNS 服务器 IP 的全部流量都会走 STA，并非只有 TCP/UDP 53 端口。
 
 本项目与乐鑫、Tailscale 均无隶属或背书关系。原始 ESP-Claw 项目由
 [`espressif/esp-claw`](https://github.com/espressif/esp-claw) 维护。

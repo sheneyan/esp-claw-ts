@@ -1,10 +1,13 @@
-#include "ts_claw_dns_policy.h"
+#include "ts_claw_dns_runtime.h"
+
+#include "lwip/dns.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void test_check(bool condition, const char *expression, const char *file, int line)
 {
@@ -16,126 +19,154 @@ static void test_check(bool condition, const char *expression, const char *file,
 
 #define TEST_CHECK(condition) test_check((condition), #condition, __FILE__, __LINE__)
 
-typedef struct {
-    const ts_claw_dns_server_t *servers;
-    size_t count;
-} reader_fixture_t;
+static ip_addr_t s_dns_servers[DNS_MAX_SERVERS];
+static uint32_t s_applied[TS_CLAW_DNS_BYPASS_MAX];
+static size_t s_applied_count;
 
-typedef struct {
-    uint32_t addresses[TS_CLAW_DNS_BYPASS_MAX];
-    size_t count;
-} applied_fixture_t;
-
-static applied_fixture_t s_applied;
-
-static bool fixture_reader(size_t index, ts_claw_dns_server_t *server, void *ctx)
+const ip_addr_t *dns_getserver(u8_t index)
 {
-    const reader_fixture_t *fixture = ctx;
-    if (index >= fixture->count) {
-        return false;
-    }
-    *server = fixture->servers[index];
-    return true;
+    return index < DNS_MAX_SERVERS ? &s_dns_servers[index] : NULL;
 }
 
 static void capture_apply(const uint32_t *addresses, size_t count)
 {
-    s_applied.count = count;
+    s_applied_count = count;
     for (size_t i = 0; i < TS_CLAW_DNS_BYPASS_MAX; ++i) {
-        s_applied.addresses[i] = i < count ? addresses[i] : 0u;
+        s_applied[i] = i < count ? addresses[i] : 0u;
     }
 }
 
-static void test_capture_filters_non_public_and_deduplicates(void)
+static void reset_fixture(void)
 {
-    const ts_claw_dns_server_t servers[] = {
-        {.present = false, .ipv4 = true, .host_order_ip = 0x08080808u},
-        {.present = true, .ipv4 = false, .host_order_ip = 0x08080808u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0xC0A80101u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0xA9FE0101u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0x64646464u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0x08080808u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0x08080808u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0x01010101u},
-    };
-    const reader_fixture_t fixture = {
-        .servers = servers,
-        .count = sizeof(servers) / sizeof(servers[0]),
-    };
-    ts_claw_dns_refresh_result_t result = {0};
+    memset(s_dns_servers, 0, sizeof(s_dns_servers));
+    memset(s_applied, 0, sizeof(s_applied));
+    s_applied_count = 0u;
+}
 
-    ts_claw_dns_refresh(fixture_reader, (void *)&fixture, fixture.count,
-                        capture_apply, &result);
+static void set_ipv4(size_t index, uint32_t host_order_ip)
+{
+    s_dns_servers[index].type = IPADDR_TYPE_V4;
+    s_dns_servers[index].u_addr.ip4.addr = lwip_htonl(host_order_ip);
+}
 
-    TEST_CHECK(result.bypass_count == 2u);
+static void set_ipv6(size_t index)
+{
+    s_dns_servers[index].type = IPADDR_TYPE_V6;
+    s_dns_servers[index].u_addr.ip4.addr = 0xffffffffu;
+}
+
+static ts_claw_dns_runtime_result_t refresh_active(void)
+{
+    ts_claw_dns_runtime_result_t result = {0};
+    ts_claw_dns_runtime_refresh(true, capture_apply, &result);
+    return result;
+}
+
+static void test_active_exit_resolver_modes(void)
+{
+    ts_claw_dns_runtime_result_t result;
+
+    reset_fixture();
+    set_ipv4(0, 0xC0A80101u);
+    result = refresh_active();
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_STA);
+    TEST_CHECK(!result.bypass_active && result.bypass_count == 0u);
+
+    reset_fixture();
+    set_ipv4(0, 0x08080808u);
+    result = refresh_active();
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_STA);
+    TEST_CHECK(result.bypass_active && result.bypass_count == 1u);
+    TEST_CHECK(s_applied[0] == 0x08080808u);
+
+    reset_fixture();
+    set_ipv4(0, 0x64646464u);
+    result = refresh_active();
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_EXIT);
+    TEST_CHECK(!result.bypass_active && result.bypass_count == 0u);
+
+    reset_fixture();
+    set_ipv4(0, 0xA9FE0101u);
+    set_ipv4(1, 0x64646464u);
+    result = refresh_active();
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_MIXED);
+    TEST_CHECK(!result.bypass_active && result.bypass_count == 0u);
+
+    reset_fixture();
+    set_ipv4(0, 0x01010101u);
+    set_ipv4(1, 0x64646464u);
+    result = refresh_active();
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_MIXED);
+    TEST_CHECK(result.bypass_active && result.bypass_count == 1u);
+
+    reset_fixture();
+    result = refresh_active();
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_UNAVAILABLE);
+    TEST_CHECK(!result.bypass_active && result.bypass_count == 0u);
+}
+
+static void test_lwip_conversion_filter_dedup_and_bound(void)
+{
+    reset_fixture();
+    set_ipv6(0);
+    set_ipv4(1, 0u);
+    set_ipv4(2, 0x08080808u);
+    set_ipv4(3, 0x08080808u);
+    set_ipv4(4, 0x01010101u);
+    set_ipv4(5, 0x09090909u);
+    set_ipv4(6, 0xD043DEDEu);
+    set_ipv4(7, 0x64646464u);
+
+    const ts_claw_dns_runtime_result_t result = refresh_active();
+
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_MIXED);
+    TEST_CHECK(result.bypass_count == TS_CLAW_DNS_BYPASS_MAX);
     TEST_CHECK(result.bypass[0] == 0x08080808u);
     TEST_CHECK(result.bypass[1] == 0x01010101u);
-    TEST_CHECK(s_applied.count == 2u);
-    TEST_CHECK(s_applied.addresses[0] == 0x08080808u);
-    TEST_CHECK(s_applied.addresses[1] == 0x01010101u);
-}
-
-static void test_capture_is_bounded_and_preserves_reader_order(void)
-{
-    const ts_claw_dns_server_t servers[] = {
-        {.present = true, .ipv4 = true, .host_order_ip = 0x01010101u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0x08080808u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0x09090909u},
-        {.present = true, .ipv4 = true, .host_order_ip = 0xD043DEDEu},
-    };
-    const reader_fixture_t fixture = {
-        .servers = servers,
-        .count = sizeof(servers) / sizeof(servers[0]),
-    };
-    ts_claw_dns_refresh_result_t result = {0};
-
-    ts_claw_dns_refresh(fixture_reader, (void *)&fixture, fixture.count,
-                        capture_apply, &result);
-
-    TEST_CHECK(result.bypass_count == TS_CLAW_DNS_BYPASS_MAX);
-    TEST_CHECK(result.bypass[0] == 0x01010101u);
-    TEST_CHECK(result.bypass[1] == 0x08080808u);
     TEST_CHECK(result.bypass[2] == 0x09090909u);
-    TEST_CHECK(s_applied.count == TS_CLAW_DNS_BYPASS_MAX);
+    TEST_CHECK(s_applied_count == TS_CLAW_DNS_BYPASS_MAX);
 }
 
-static void test_refresh_updates_and_clears_applied_route_list(void)
+static void test_refresh_updates_clears_and_inactive_mode(void)
 {
-    const ts_claw_dns_server_t first_servers[] = {
-        {.present = true, .ipv4 = true, .host_order_ip = 0x08080808u},
-    };
-    const ts_claw_dns_server_t second_servers[] = {
-        {.present = true, .ipv4 = true, .host_order_ip = 0x01010101u},
-    };
-    const reader_fixture_t first = {.servers = first_servers, .count = 1u};
-    const reader_fixture_t second = {.servers = second_servers, .count = 1u};
-    const reader_fixture_t empty = {.servers = NULL, .count = 0u};
-    ts_claw_dns_refresh_result_t result = {0};
+    ts_claw_dns_runtime_result_t result = {0};
 
-    ts_claw_dns_refresh(fixture_reader, (void *)&first, first.count,
-                        capture_apply, &result);
-    TEST_CHECK(result.bypass_count == 1u);
-    TEST_CHECK(s_applied.addresses[0] == 0x08080808u);
+    reset_fixture();
+    set_ipv4(0, 0x08080808u);
+    ts_claw_dns_runtime_refresh(true, capture_apply, &result);
+    TEST_CHECK(s_applied[0] == 0x08080808u && result.bypass_count == 1u);
 
-    ts_claw_dns_refresh(fixture_reader, (void *)&second, second.count,
-                        capture_apply, &result);
-    TEST_CHECK(result.bypass_count == 1u);
-    TEST_CHECK(s_applied.addresses[0] == 0x01010101u);
+    set_ipv4(0, 0x01010101u);
+    ts_claw_dns_runtime_refresh(true, capture_apply, &result);
+    TEST_CHECK(s_applied[0] == 0x01010101u && result.bypass_count == 1u);
 
-    ts_claw_dns_refresh(fixture_reader, (void *)&empty, empty.count,
-                        capture_apply, &result);
-    TEST_CHECK(result.bypass_count == 0u);
-    TEST_CHECK(s_applied.count == 0u);
-    TEST_CHECK(s_applied.addresses[0] == 0u);
+    ts_claw_dns_runtime_refresh(false, capture_apply, &result);
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_STA);
+    TEST_CHECK(!result.bypass_active && result.bypass_count == 0u);
+    TEST_CHECK(s_applied_count == 0u && s_applied[0] == 0u);
+
+    reset_fixture();
+    ts_claw_dns_runtime_refresh(true, capture_apply, &result);
+    TEST_CHECK(result.egress == TS_CLAW_DNS_EGRESS_UNAVAILABLE);
+    TEST_CHECK(s_applied_count == 0u);
+}
+
+static void test_mode_strings(void)
+{
+    TEST_CHECK(strcmp(ts_claw_dns_egress_name(TS_CLAW_DNS_EGRESS_STA), "sta") == 0);
+    TEST_CHECK(strcmp(ts_claw_dns_egress_name(TS_CLAW_DNS_EGRESS_EXIT), "exit") == 0);
+    TEST_CHECK(strcmp(ts_claw_dns_egress_name(TS_CLAW_DNS_EGRESS_MIXED), "mixed") == 0);
+    TEST_CHECK(strcmp(ts_claw_dns_egress_name(TS_CLAW_DNS_EGRESS_UNAVAILABLE),
+                      "unavailable") == 0);
 }
 
 int main(void)
 {
-    test_capture_filters_non_public_and_deduplicates();
-    test_capture_is_bounded_and_preserves_reader_order();
-    test_refresh_updates_and_clears_applied_route_list();
+    test_active_exit_resolver_modes();
+    test_lwip_conversion_filter_dedup_and_bound();
+    test_refresh_updates_clears_and_inactive_mode();
+    test_mode_strings();
 
-    puts("ts_claw_dns_policy: all tests passed");
+    puts("ts_claw_dns_runtime: all tests passed");
     return 0;
 }

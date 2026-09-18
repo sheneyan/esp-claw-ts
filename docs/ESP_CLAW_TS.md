@@ -260,21 +260,26 @@ The status page distinguishes the configured node from actual egress:
 
 ### DNS compatibility policy
 
-While `egress` is `exit`, ESP-Claw TS captures the current IPv4 resolvers from
-lwIP/DHCP and keeps matching public resolver destinations on the Wi-Fi STA
-path. Other public traffic continues through the Exit Node. Status exposes
-`dns_egress`, `dns_bypass_active`, and the bounded `dns_bypass_count`; resolver
-addresses are not exposed to the agent or page. CGNAT destinations, including
-`100.100.100.100`, always remain on WireGuard even if present in the resolver
-table. Private and link-local resolvers already use STA under the local rule.
-Therefore `egress: "exit"` with `dns_egress: "sta"` still means local-Wi-Fi
-DNS; it only means no public resolver needed an explicit exact-IP bypass.
-`dns_bypass_count` counts those public exact-IP bypasses, not all resolvers.
+While `egress` is `exit`, ESP-Claw TS classifies the current IPv4 resolvers
+from lwIP/DHCP by their actual route. Private/link-local resolvers and captured
+public resolvers use Wi-Fi STA; CGNAT resolvers, including `100.100.100.100`,
+use WireGuard. Other public traffic continues through the Exit Node. Status
+exposes `dns_egress`, `dns_bypass_active`, and bounded `dns_bypass_count`;
+resolver addresses are not exposed to the agent or page:
 
-Sites normally see the Exit Node public IP, but DNS queries use local Wi-Fi.
-The local resolver or ISP can observe queried domains; local DNS answers, CDN
+- `sta`: every effective resolver uses STA;
+- `exit`: every effective resolver uses WireGuard/Exit Node;
+- `mixed`: effective resolvers use both paths;
+- `unavailable`: no usable resolver path is currently known.
+
+`dns_bypass_count` counts only public exact-IP STA bypasses, not private,
+link-local, or CGNAT resolvers. Sites normally see the Exit Node public IP. In
+`sta` mode the local resolver or ISP can observe queried domains; in `mixed`
+mode it can observe the locally routed subset. Local DNS answers, CDN
 geolocation, or DNS pollution may affect reachability or content selection.
-This behavior is for compatibility and is not a privacy VPN. The route hook
+`exit` does not imply a local DNS disclosure, while `unavailable` means name
+resolution may fail. This behavior is for compatibility and is not a privacy
+VPN. The route hook
 operates on destination IP only, so **all traffic to a captured public resolver
 IP**—not only UDP/TCP port 53—uses STA. The list is refreshed from lwIP while
 the Exit Node is active and cleared on fallback, clear, rollback transition,

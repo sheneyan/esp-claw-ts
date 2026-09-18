@@ -168,7 +168,7 @@ static esp_err_t get_status(http_server_tailscale_status_t *out)
 {
     out->enabled = true;
     out->connected = true;
-    snprintf(out->dns_egress, sizeof(out->dns_egress), "sta_bypass");
+    snprintf(out->dns_egress, sizeof(out->dns_egress), "mixed");
     out->dns_bypass_active = true;
     out->dns_bypass_count = 2u;
     return ESP_OK;
@@ -244,7 +244,7 @@ static void test_valid_body_reaches_callback_once(void)
 static void test_status_serializes_dns_compatibility_state(void)
 {
     invoke("/api/tailscale/status", HTTP_GET, "", 0u);
-    CHECK(strstr(response_body, "\"dns_egress\":\"sta_bypass\"") != NULL);
+    CHECK(strstr(response_body, "\"dns_egress\":\"mixed\"") != NULL);
     CHECK(strstr(response_body, "\"dns_bypass_active\":true") != NULL);
     CHECK(strstr(response_body, "\"dns_bypass_count\":2") != NULL);
 }

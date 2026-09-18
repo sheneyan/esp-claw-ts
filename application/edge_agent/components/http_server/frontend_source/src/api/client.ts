@@ -117,6 +117,8 @@ export type StatusInfo = {
   storage_base_path: string;
 };
 
+export type TailscaleDnsEgress = 'sta' | 'exit' | 'mixed' | 'unavailable';
+
 export type TailscaleStatus = {
   enabled: boolean;
   connected: boolean;
@@ -127,7 +129,7 @@ export type TailscaleStatus = {
   exit_node: string;
   exit_state: string;
   egress: string;
-  dns_egress: string;
+  dns_egress: TailscaleDnsEgress;
   dns_bypass_active: boolean;
   dns_bypass_count: number;
   last_error: string;
@@ -166,7 +168,7 @@ export type TailscaleDiagnosticStatus = {
   exit_node: string;
   state: string;
   egress: string;
-  dns_egress: string;
+  dns_egress: TailscaleDnsEgress;
   dns_bypass_active: boolean;
   dns_bypass_count: number;
   last_error: string;

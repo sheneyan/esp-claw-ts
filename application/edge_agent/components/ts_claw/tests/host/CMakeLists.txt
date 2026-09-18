@@ -21,11 +21,13 @@ endif()
 
 add_executable(test_ts_claw_dns_policy
     test_ts_claw_dns_policy.c
+    ../../ts_claw_dns_runtime.c
     ../../ts_claw_dns_policy.c
     ../../ts_claw_policy.c
 )
 
 target_include_directories(test_ts_claw_dns_policy PRIVATE
+    stubs
     ../..
     ../../include
 )

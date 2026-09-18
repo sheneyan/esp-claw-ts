@@ -114,8 +114,15 @@ export const zhCn: Dict = {
   tailscaleActualEgress: '实际出口',
   tailscaleDnsEgress: 'DNS 出口',
   tailscaleDnsLocalValue: '本地 Wi-Fi DNS（{count} 个公网精确旁路）',
+  tailscaleDnsExitValue: 'Exit Node / WireGuard DNS',
+  tailscaleDnsMixedValue: '本地与 Exit Node 混合 DNS（{count} 个公网精确旁路）',
+  tailscaleDnsUnavailableValue: 'DNS 路径不可用',
   tailscaleDnsCompatibilityWarning:
     '兼容模式：DNS 查询走本地 Wi-Fi，本地解析器或运营商可能看到查询域名；网站流量仍通过 Exit Node。',
+  tailscaleDnsMixedWarning:
+    'DNS 路径混合：部分查询走本地 Wi-Fi，可能被本地解析器或运营商看到；其余查询走 Exit Node。',
+  tailscaleDnsUnavailableWarning:
+    'Exit Node 已生效，但 DNS 路径当前不可用或未知；域名解析可能失败，或在 DHCP 刷新后发生变化。',
   tailscaleLastError: '最近错误',
   tailscaleEnabled: '启用 Tailscale',
   tailscaleEnabledHint: '修改后重启设备生效。',

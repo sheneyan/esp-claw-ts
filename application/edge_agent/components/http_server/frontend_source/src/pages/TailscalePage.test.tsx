@@ -165,7 +165,7 @@ describe('TailscalePage Exit Node control', () => {
       exit_node: onlineNode.ip,
       exit_state: 'active',
       egress: 'exit',
-      dns_egress: 'sta_bypass',
+      dns_egress: 'sta',
       dns_bypass_active: true,
       dns_bypass_count: 2,
     });
@@ -202,6 +202,47 @@ describe('TailscalePage Exit Node control', () => {
     expect(
       screen.queryByText(/DNS queries use local Wi-Fi and may be visible to the local resolver or ISP/i),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a partial-disclosure warning for mixed DNS paths', async () => {
+    api.fetchStatus.mockResolvedValue({
+      ...connectedStatus,
+      exit_state: 'active',
+      egress: 'exit',
+      dns_egress: 'mixed',
+      dns_bypass_active: true,
+      dns_bypass_count: 1,
+    });
+    render(() => <TailscalePage />);
+
+    expect(await screen.findByText('Mixed local and Exit Node DNS (1 public bypasses)')).toBeInTheDocument();
+    expect(screen.getByText(/some queries use local Wi-Fi and may be visible locally/i)).toBeInTheDocument();
+  });
+
+  it('reports Exit Node DNS without a local-leak warning', async () => {
+    api.fetchStatus.mockResolvedValue({
+      ...connectedStatus,
+      exit_state: 'active',
+      egress: 'exit',
+      dns_egress: 'exit',
+    });
+    render(() => <TailscalePage />);
+
+    expect(await screen.findByText('Exit Node / WireGuard DNS')).toBeInTheDocument();
+    expect(screen.queryByText(/may be visible/i)).not.toBeInTheDocument();
+  });
+
+  it('warns when the active Exit Node has no known resolver path', async () => {
+    api.fetchStatus.mockResolvedValue({
+      ...connectedStatus,
+      exit_state: 'active',
+      egress: 'exit',
+      dns_egress: 'unavailable',
+    });
+    render(() => <TailscalePage />);
+
+    expect(await screen.findByText('DNS path unavailable')).toBeInTheDocument();
+    expect(screen.getByText(/DNS path is unavailable or unknown/i)).toBeInTheDocument();
   });
 
   it('keeps the Exit Node control visible while configuration is loading', async () => {

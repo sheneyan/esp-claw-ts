@@ -116,8 +116,15 @@ export const en = {
   tailscaleActualEgress: 'Actual Egress',
   tailscaleDnsEgress: 'DNS Egress',
   tailscaleDnsLocalValue: 'Local Wi-Fi DNS ({count} public bypasses)',
+  tailscaleDnsExitValue: 'Exit Node / WireGuard DNS',
+  tailscaleDnsMixedValue: 'Mixed local and Exit Node DNS ({count} public bypasses)',
+  tailscaleDnsUnavailableValue: 'DNS path unavailable',
   tailscaleDnsCompatibilityWarning:
     'Compatibility mode: DNS queries use local Wi-Fi and may be visible to the local resolver or ISP. Website traffic still uses the Exit Node.',
+  tailscaleDnsMixedWarning:
+    'Mixed DNS paths: some queries use local Wi-Fi and may be visible locally; others use the Exit Node.',
+  tailscaleDnsUnavailableWarning:
+    'DNS path is unavailable or unknown while the Exit Node is active. Name resolution may fail or change after DHCP refresh.',
   tailscaleLastError: 'Last Error',
   tailscaleEnabled: 'Enable Tailscale',
   tailscaleEnabledHint: 'Changes take effect after the device restarts.',

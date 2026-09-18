@@ -18,7 +18,15 @@ typedef bool (*ts_claw_dns_reader_t)(size_t index,
 typedef void (*ts_claw_dns_apply_t)(const uint32_t *host_order_ips,
                                     size_t count);
 
+typedef enum {
+    TS_CLAW_DNS_EGRESS_UNAVAILABLE,
+    TS_CLAW_DNS_EGRESS_STA,
+    TS_CLAW_DNS_EGRESS_EXIT,
+    TS_CLAW_DNS_EGRESS_MIXED,
+} ts_claw_dns_egress_t;
+
 typedef struct {
+    ts_claw_dns_egress_t egress;
     uint32_t bypass[TS_CLAW_DNS_BYPASS_MAX];
     size_t bypass_count;
 } ts_claw_dns_refresh_result_t;
