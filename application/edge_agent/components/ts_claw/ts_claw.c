@@ -15,6 +15,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/ip_addr.h"
+#include "lwip/dns.h"
 #include "lwip/netif.h"
 #include "microlink.h"
 #include "ping/ping_sock.h"
@@ -102,12 +103,14 @@ typedef struct {
     char login_server[TS_CLAW_LOGIN_SERVER_LEN];
     ts_claw_config_t config;
     ts_claw_status_t status;
+    uint8_t dns_bypass_count;
 } ts_claw_context_t;
 
 static const char *TAG = "ts_claw";
 static ts_claw_context_t s_ts;
 
 static esp_err_t send_sync_event(ts_event_t *event);
+static void refresh_dns_bypass(void);
 static void worker_schedule_destroy_retry(
     ts_claw_runtime_destroy_retry_mode_t mode,
     uint64_t current_ms);
@@ -135,20 +138,91 @@ static void set_last_error(const char *message)
 
 static void update_exit_status_locked(void)
 {
+    const bool exit_active = ts_exit_policy_routes_public(&s_ts.exit_policy);
     s_ts.status.exit_state = s_ts.exit_policy.state;
     copy_string(s_ts.status.egress, sizeof(s_ts.status.egress),
                 !s_ts.wifi_has_ip ? "unavailable" :
-                ts_exit_policy_routes_public(&s_ts.exit_policy) ? "exit" : "sta");
+                exit_active ? "exit" : "sta");
+    s_ts.status.dns_bypass_active = exit_active && s_ts.dns_bypass_count > 0u;
+    s_ts.status.dns_bypass_count = s_ts.status.dns_bypass_active
+                                       ? s_ts.dns_bypass_count
+                                       : 0u;
+    copy_string(s_ts.status.dns_egress, sizeof(s_ts.status.dns_egress),
+                !s_ts.wifi_has_ip ? "unavailable" :
+                s_ts.status.dns_bypass_active ? "sta_bypass" : "sta");
 }
 
 static void set_exit_usable(bool usable)
 {
+    if (!usable) {
+        ts_claw_route_hook_set_exit_active(false);
+    }
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     ts_exit_policy_set_tunnel(&s_ts.exit_policy, usable);
+    const bool exit_active = ts_exit_policy_routes_public(&s_ts.exit_policy);
+    if (!exit_active) {
+        s_ts.dns_bypass_count = 0u;
+    }
     update_exit_status_locked();
-    ts_claw_route_hook_set_exit_active(
-        ts_exit_policy_routes_public(&s_ts.exit_policy));
     xSemaphoreGive(s_ts.lock);
+    if (exit_active) {
+        refresh_dns_bypass();
+        ts_claw_route_hook_set_exit_active(true);
+        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+        update_exit_status_locked();
+        xSemaphoreGive(s_ts.lock);
+    } else {
+        ts_claw_route_hook_set_exit_active(false);
+    }
+}
+
+static void refresh_dns_bypass(void)
+{
+    uint32_t resolvers[TS_CLAW_DNS_BYPASS_MAX] = {0};
+    size_t count = 0u;
+
+    for (size_t i = 0; i < DNS_MAX_SERVERS && count < TS_CLAW_DNS_BYPASS_MAX; ++i) {
+        const ip_addr_t *server = dns_getserver((u8_t)i);
+        if (server == NULL || !IP_IS_V4(server)) {
+            continue;
+        }
+        const uint32_t resolver = lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(server)));
+        if (resolver == 0u || ts_route_is_cgnat(resolver) ||
+            !ts_route_is_public_unicast(resolver)) {
+            continue;
+        }
+        bool duplicate = false;
+        for (size_t j = 0; j < count; ++j) {
+            duplicate = duplicate || resolvers[j] == resolver;
+        }
+        if (!duplicate) {
+            resolvers[count++] = resolver;
+        }
+    }
+
+    const ts_claw_route_state_t old_state = ts_claw_route_hook_get_state();
+    bool changed = old_state.dns_bypass_count != count;
+    for (size_t i = 0; !changed && i < count; ++i) {
+        changed = old_state.dns_bypass[i] != resolvers[i];
+    }
+    ts_claw_route_hook_set_dns_bypass(resolvers, count);
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    s_ts.dns_bypass_count = (uint8_t)count;
+    xSemaphoreGive(s_ts.lock);
+
+    if (changed) {
+        ESP_LOGI(TAG, "Exit Node DNS compatibility bypass: %u public resolver(s)",
+                 (unsigned)count);
+        for (size_t i = 0; i < count; ++i) {
+            ESP_LOGI(TAG, "DNS resolver[%u]=%u.%u.%u.%u via STA",
+                     (unsigned)i,
+                     (unsigned)((resolvers[i] >> 24) & 0xffu),
+                     (unsigned)((resolvers[i] >> 16) & 0xffu),
+                     (unsigned)((resolvers[i] >> 8) & 0xffu),
+                     (unsigned)(resolvers[i] & 0xffu));
+        }
+    }
 }
 
 static void set_exit_probe_accept_results(bool accept)
@@ -160,16 +234,30 @@ static void set_exit_probe_accept_results(bool accept)
 
 static void record_exit_probe(esp_ping_handle_t handle, bool success)
 {
+    bool exit_active;
+
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     if (handle != s_ts.exit_ping || !s_ts.exit_ping_accept_results) {
         xSemaphoreGive(s_ts.lock);
         return;
     }
     ts_exit_policy_on_probe(&s_ts.exit_policy, success);
-    update_exit_status_locked();
-    ts_claw_route_hook_set_exit_active(
-        ts_exit_policy_routes_public(&s_ts.exit_policy));
+    exit_active = ts_exit_policy_routes_public(&s_ts.exit_policy);
     xSemaphoreGive(s_ts.lock);
+
+    if (exit_active) {
+        refresh_dns_bypass();
+        ts_claw_route_hook_set_exit_active(true);
+        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+        update_exit_status_locked();
+        xSemaphoreGive(s_ts.lock);
+    } else {
+        ts_claw_route_hook_set_exit_active(false);
+        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+        s_ts.dns_bypass_count = 0u;
+        update_exit_status_locked();
+        xSemaphoreGive(s_ts.lock);
+    }
 }
 
 static void exit_probe_on_success(esp_ping_handle_t handle, void *args)
@@ -274,6 +362,11 @@ static void set_disconnected_status(void)
     s_ts.status.peer_online = 0;
     copy_string(s_ts.status.egress, sizeof(s_ts.status.egress),
                 s_ts.wifi_has_ip ? "sta" : "unavailable");
+    copy_string(s_ts.status.dns_egress, sizeof(s_ts.status.dns_egress),
+                s_ts.wifi_has_ip ? "sta" : "unavailable");
+    s_ts.status.dns_bypass_active = false;
+    s_ts.status.dns_bypass_count = 0u;
+    s_ts.dns_bypass_count = 0u;
     xSemaphoreGive(s_ts.lock);
 }
 
@@ -1272,6 +1365,8 @@ esp_err_t ts_claw_init(const ts_claw_config_t *config)
     s_ts.desired_exit_node_ip = config->exit_node_ip;
     s_ts.status.exit_state = config->exit_node_ip != 0u ? TS_EXIT_PENDING : TS_EXIT_DISABLED;
     copy_string(s_ts.status.egress, sizeof(s_ts.status.egress), "unavailable");
+    copy_string(s_ts.status.dns_egress, sizeof(s_ts.status.dns_egress),
+                "unavailable");
     ts_resource_guard_init(&s_ts.resource_guard);
     ts_exit_policy_init(&s_ts.exit_policy, config->exit_node_ip != 0u);
     ts_claw_runtime_control_init(&s_ts.runtime_control, &s_runtime_ops, NULL);

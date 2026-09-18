@@ -60,6 +60,9 @@ typedef struct {
     char exit_node[HTTP_SERVER_TAILSCALE_IP_LEN];
     char exit_state[HTTP_SERVER_TAILSCALE_STATE_LEN];
     char egress[HTTP_SERVER_TAILSCALE_STATE_LEN];
+    char dns_egress[HTTP_SERVER_TAILSCALE_STATE_LEN];
+    bool dns_bypass_active;
+    uint8_t dns_bypass_count;
     char last_error[HTTP_SERVER_TAILSCALE_LAST_ERROR_LEN];
     size_t heap_internal_free;
     size_t heap_internal_largest;

@@ -31,6 +31,8 @@ STATIC_ASSERT(status_exit_node_capacity,
               sizeof(((cap_tailscale_status_t *)0)->exit_node) == CAP_TAILSCALE_IP_LEN);
 STATIC_ASSERT(status_exit_state_capacity, sizeof(((cap_tailscale_status_t *)0)->exit_state) == 16);
 STATIC_ASSERT(status_egress_capacity, sizeof(((cap_tailscale_status_t *)0)->egress) == 16);
+STATIC_ASSERT(status_dns_egress_capacity,
+              sizeof(((cap_tailscale_status_t *)0)->dns_egress) == 16);
 STATIC_ASSERT(status_last_error_capacity,
               sizeof(((cap_tailscale_status_t *)0)->last_error) == CAP_TAILSCALE_ERROR_LEN);
 STATIC_ASSERT(status_derp_rtt_capacity,
@@ -291,6 +293,9 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     snprintf(status.exit_node, sizeof(status.exit_node), "exit-sentinel");
     snprintf(status.exit_state, sizeof(status.exit_state), "state-sentinel");
     snprintf(status.egress, sizeof(status.egress), "egress-sentinel");
+    snprintf(status.dns_egress, sizeof(status.dns_egress), "sta_bypass");
+    status.dns_bypass_active = true;
+    status.dns_bypass_count = 2;
     snprintf(status.last_error, sizeof(status.last_error), "safe-error-sentinel");
     status.derp_active.id = 1;
     snprintf(status.derp_active.name, sizeof(status.derp_active.name), "active-derp-sentinel");
@@ -329,6 +334,9 @@ static void test_model_descriptor_ids_and_safe_status_rendering(void)
     TEST_CHECK(strstr(output, "exit-sentinel") != NULL);
     TEST_CHECK(strstr(output, "\"state\":\"state-sentinel\"") != NULL);
     TEST_CHECK(strstr(output, "\"egress\":\"egress-sentinel\"") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_egress\":\"sta_bypass\"") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_bypass_active\":true") != NULL);
+    TEST_CHECK(strstr(output, "\"dns_bypass_count\":2") != NULL);
     TEST_CHECK(strstr(output, "safe-error-sentinel") != NULL);
     TEST_CHECK(strstr(output, "\"active\":{\"id\":1,\"name\":\"active-derp-sentinel\"}") != NULL);
     TEST_CHECK(strstr(output, "\"default\":{\"id\":2,\"name\":\"default-derp-sentinel\"}") != NULL);

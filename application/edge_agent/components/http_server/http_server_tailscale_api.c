@@ -252,6 +252,11 @@ static bool add_status_fields(cJSON *root, const http_server_tailscale_status_t 
            cJSON_AddStringToObject(root, "exit_node", status->exit_node) != NULL &&
            cJSON_AddStringToObject(root, "exit_state", status->exit_state) != NULL &&
            cJSON_AddStringToObject(root, "egress", status->egress) != NULL &&
+           cJSON_AddStringToObject(root, "dns_egress", status->dns_egress) != NULL &&
+           cJSON_AddBoolToObject(root, "dns_bypass_active",
+                                 status->dns_bypass_active) != NULL &&
+           cJSON_AddNumberToObject(root, "dns_bypass_count",
+                                   status->dns_bypass_count) != NULL &&
            cJSON_AddStringToObject(root, "last_error", status->last_error) != NULL &&
            cJSON_AddBoolToObject(root, "auth_key_set", status->auth_key_set) != NULL &&
            cJSON_AddNumberToObject(root, "heap_internal_free",

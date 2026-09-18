@@ -170,7 +170,7 @@ curl --noproxy '*' -fsS http://设备TAILNET_IP/api/webim/status
 
 | 工具 | 用途 |
 | --- | --- |
-| `tailscale_status` | 读取连接、所选 Exit Node、实际出口、错误、节点数、计时、重连计数和有界的 DERP 诊断。 |
+| `tailscale_status` | 读取连接、所选 Exit Node、实际出口、DNS 兼容出口/数量、错误、节点数、计时、重连计数和有界的 DERP 诊断。 |
 | `tailscale_list_exit_nodes` | 列出当前可见的 Exit Node 候选，包括在线/直连状态及已知的 DERP 区域。 |
 | `tailscale_set_exit_node` | 按规范 CGNAT IP 或无歧义的主机名选择一个在线节点。 |
 | `tailscale_clear_exit_node` | 关闭 Exit Node 路由，让设备自身流量恢复使用 Wi-Fi。 |
@@ -223,6 +223,21 @@ HTTP 变更路由没有额外认证封装。应以可信局域网暴露方式和
 - `exit`：选中的 exit node 健康，ESP32 自己发起的出站流量经它转发。
 - `wifi`：当前走普通 Wi-Fi 出口。
 - `fallback`：仍配置了 exit node，但它当前不可用，出站流量已回退到 Wi-Fi。
+
+### DNS 兼容策略
+
+当 `egress` 为 `exit` 时，ESP-Claw TS 会从 lwIP/DHCP 捕获当前 IPv4 DNS 解析器，并让
+命中的公网解析器目标继续走 Wi-Fi STA；其他公网流量仍走 Exit Node。状态中会提供
+`dns_egress`、`dns_bypass_active` 和有界的 `dns_bypass_count`，但不会把解析器地址暴露
+给智能体或网页。CGNAT 目标（包括 `100.100.100.100`）即使出现在解析器表中也始终走
+WireGuard；私网和链路本地解析器原本就会按本地路由规则走 STA。
+
+网站通常看到的是 Exit Node 公网 IP，但 DNS 查询使用本地 Wi-Fi。本地解析器或运营商
+可以看到查询域名；本地 DNS 返回、CDN 地理调度或 DNS 污染可能影响可达性或内容选择。
+这是兼容性行为，不应描述为隐私 VPN。路由钩子只能看到目标 IP，无法识别端口，所以
+命中所捕获公网解析器 IP 的**全部流量**都会走 STA，并非只有 UDP/TCP 53 端口。
+Exit Node 生效期间会从 lwIP 刷新该列表；进入 fallback、清除或回滚切换、Wi-Fi 断开、
+运行时销毁时都会清空，避免遗留旧地址。
 
 恢复过程采用保守策略：exit node 必须连续探测成功后才会重新切回。这个策略只控制
 ESP32 自身发起的出站流量；它不会把 ESP32 宣告为 exit node，也不会替其他局域网

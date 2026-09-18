@@ -127,6 +127,9 @@ export type TailscaleStatus = {
   exit_node: string;
   exit_state: string;
   egress: string;
+  dns_egress: string;
+  dns_bypass_active: boolean;
+  dns_bypass_count: number;
   last_error: string;
   auth_key_set: boolean;
   heap_internal_free: number;
@@ -163,6 +166,9 @@ export type TailscaleDiagnosticStatus = {
   exit_node: string;
   state: string;
   egress: string;
+  dns_egress: string;
+  dns_bypass_active: boolean;
+  dns_bypass_count: number;
   last_error: string;
   derp: {
     active: TailscaleDerpRegion;

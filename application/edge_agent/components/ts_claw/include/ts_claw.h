@@ -33,6 +33,9 @@ typedef struct {
     int peer_online;
     ts_exit_state_t exit_state;
     char egress[16];
+    char dns_egress[16];
+    bool dns_bypass_active;
+    uint8_t dns_bypass_count;
     char last_error[96];
     size_t internal_free;
     size_t internal_largest;

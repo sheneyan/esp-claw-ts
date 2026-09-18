@@ -27,7 +27,7 @@ import { SelectInput, TextInput } from '../components/ui/FormField';
 import { PageHeader } from '../components/ui/PageHeader';
 import { SavePanel } from '../components/ui/SavePanel';
 import { Switch } from '../components/ui/Switch';
-import { t } from '../i18n';
+import { t, tf } from '../i18n';
 import { appConfig, isGroupLoaded, patchConfigLocal } from '../state/config';
 import { createConfigTab } from '../state/configTab';
 import { pushToast } from '../state/toast';
@@ -304,8 +304,26 @@ export const TailscalePage: Component = () => {
             />
             <InfoRow label={t('tailscaleExitState') as string} value={status()?.exit_state} />
             <InfoRow label={t('tailscaleActualEgress') as string} value={status()?.egress} />
+            <InfoRow
+              label={t('tailscaleDnsEgress') as string}
+              value={
+                status()?.dns_bypass_active
+                  ? tf('tailscaleDnsLocalValue', {
+                      count: status()!.dns_bypass_count,
+                    })
+                  : status()?.dns_egress
+              }
+            />
             <InfoRow label={t('tailscaleLastError') as string} value={status()?.last_error} />
           </div>
+          <Show when={status()?.dns_bypass_active}>
+            <div class="pt-3">
+              <Banner
+                kind="info"
+                message={t('tailscaleDnsCompatibilityWarning') as string}
+              />
+            </div>
+          </Show>
         </StaticConfigBlock>
         <StaticConfigBlock title={t('tailscaleSectionSettings') as string}>
           <div class="grid gap-3 pt-2 sm:grid-cols-2">

@@ -384,6 +384,10 @@ static esp_err_t main_get_tailscale_status(http_server_tailscale_status_t *statu
     strlcpy(status->exit_state, main_tailscale_exit_state_name(snapshot->exit_state),
             sizeof(status->exit_state));
     strlcpy(status->egress, snapshot->egress, sizeof(status->egress));
+    strlcpy(status->dns_egress, snapshot->dns_egress,
+            sizeof(status->dns_egress));
+    status->dns_bypass_active = snapshot->dns_bypass_active;
+    status->dns_bypass_count = snapshot->dns_bypass_count;
     strlcpy(status->last_error, snapshot->last_error, sizeof(status->last_error));
     status->heap_internal_free = snapshot->internal_free;
     status->heap_internal_largest = snapshot->internal_largest;
@@ -488,6 +492,10 @@ static esp_err_t main_cap_tailscale_get_status(cap_tailscale_status_t *out,
             main_tailscale_exit_state_name(diagnostics->status.exit_state),
             sizeof(out->exit_state));
     strlcpy(out->egress, diagnostics->status.egress, sizeof(out->egress));
+    strlcpy(out->dns_egress, diagnostics->status.dns_egress,
+            sizeof(out->dns_egress));
+    out->dns_bypass_active = diagnostics->status.dns_bypass_active;
+    out->dns_bypass_count = diagnostics->status.dns_bypass_count;
     strlcpy(out->last_error, diagnostics->status.last_error,
             sizeof(out->last_error));
     out->derp_active.id = diagnostics->derp_active_region;

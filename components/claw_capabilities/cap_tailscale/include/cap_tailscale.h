@@ -44,6 +44,9 @@ typedef struct {
     char exit_node[CAP_TAILSCALE_IP_LEN];
     char exit_state[16];
     char egress[16];
+    char dns_egress[16];
+    bool dns_bypass_active;
+    uint8_t dns_bypass_count;
     char last_error[CAP_TAILSCALE_ERROR_LEN];
     cap_tailscale_region_t derp_active;
     cap_tailscale_region_t derp_default;

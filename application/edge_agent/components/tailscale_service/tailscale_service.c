@@ -130,6 +130,7 @@ static bool is_cgnat_ip(uint32_t ip)
 static void sanitize_diagnostics(ts_claw_diagnostics_t *diagnostics)
 {
     diagnostics->status.egress[sizeof(diagnostics->status.egress) - 1u] = '\0';
+    diagnostics->status.dns_egress[sizeof(diagnostics->status.dns_egress) - 1u] = '\0';
     diagnostics->status.last_error[sizeof(diagnostics->status.last_error) - 1u] = '\0';
     diagnostics->hostname[sizeof(diagnostics->hostname) - 1u] = '\0';
     diagnostics->derp_active_name[sizeof(diagnostics->derp_active_name) - 1u] = '\0';

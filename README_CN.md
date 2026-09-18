@@ -43,6 +43,7 @@
 - 通过 tailnet 访问 ESP-Claw 网页和 WebSocket 聊天
 - 设备自身的出站流量可选使用 exit node
 - 所选 exit node 不可用时回退普通 Wi-Fi
+- 网站流量使用 Exit Node 时，DNS 兼容性流量保留在本地 Wi-Fi
 - 通过 `tailscale_network` Skill 和 `cap_tailscale` Capability 提供智能体可感知的
   Tailscale 诊断及经确认的实时 Exit Node 控制
 - 专用的 `esp32_s3_n16r8_ts_claw` 板型配置
@@ -59,6 +60,12 @@ rollback 状态。这里的确认只是意图保护，不是身份认证或访�
 没有额外认证封装，因此应使用可信局域网以及 tailnet ACL 或 grants 限制可达范围。
 主机名、Auth Key、登录服务器、启用状态和最大节点数仍只能通过设置页面修改。清除或
 重置设备身份必须走物理恢复出厂路径，不属于智能体操作。完整行为及失败边界请查看指南。
+
+启用 Exit Node 时，ESP-Claw TS 会让 Wi-Fi 当前提供的 DNS 解析器继续走 STA，其他公网
+流量走 Exit Node。网站通常看到的是 Exit Node 的公网 IP，但本地 DNS 解析器或运营商
+仍可能看到查询的域名，本地 DNS 返回、CDN 地理调度或 DNS 污染也可能影响结果。这是
+兼容性策略，不是隐私 VPN 模式。由于路由钩子看不到端口，命中所捕获公网 DNS 服务器
+IP 的全部流量都会走 STA，并非只有 TCP/UDP 53 端口。
 
 本项目与乐鑫、Tailscale 均无隶属或背书关系。原始 ESP-Claw 项目由
 [`espressif/esp-claw`](https://github.com/espressif/esp-claw) 维护。

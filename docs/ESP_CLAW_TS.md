@@ -188,7 +188,7 @@ Group and teaches the agent how to use these five tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `tailscale_status` | Read connection, selected Exit Node, actual egress, errors, peer counts, timing, reconnect counters, and bounded DERP diagnostics. |
+| `tailscale_status` | Read connection, selected Exit Node, actual egress, DNS compatibility egress/count, errors, peer counts, timing, reconnect counters, and bounded DERP diagnostics. |
 | `tailscale_list_exit_nodes` | List currently visible Exit Node candidates, including online/direct state and DERP region when known. |
 | `tailscale_set_exit_node` | Select an online node by canonical CGNAT IP or an unambiguous hostname selector. |
 | `tailscale_clear_exit_node` | Disable Exit Node routing and return device-originated traffic to Wi-Fi. |
@@ -257,6 +257,25 @@ The status page distinguishes the configured node from actual egress:
 - `wifi` means ordinary Wi-Fi egress is active.
 - `fallback` means the selected exit node is configured but unavailable, so
   outbound traffic has fallen back to Wi-Fi.
+
+### DNS compatibility policy
+
+While `egress` is `exit`, ESP-Claw TS captures the current IPv4 resolvers from
+lwIP/DHCP and keeps matching public resolver destinations on the Wi-Fi STA
+path. Other public traffic continues through the Exit Node. Status exposes
+`dns_egress`, `dns_bypass_active`, and the bounded `dns_bypass_count`; resolver
+addresses are not exposed to the agent or page. CGNAT destinations, including
+`100.100.100.100`, always remain on WireGuard even if present in the resolver
+table. Private and link-local resolvers already use STA under the local rule.
+
+Sites normally see the Exit Node public IP, but DNS queries use local Wi-Fi.
+The local resolver or ISP can observe queried domains; local DNS answers, CDN
+geolocation, or DNS pollution may affect reachability or content selection.
+This behavior is for compatibility and is not a privacy VPN. The route hook
+operates on destination IP only, so **all traffic to a captured public resolver
+IP**—not only UDP/TCP port 53—uses STA. The list is refreshed from lwIP while
+the Exit Node is active and cleared on fallback, clear, rollback transition,
+Wi-Fi loss, or runtime teardown.
 
 Recovery is intentionally conservative: an exit node must show repeated
 successful probes before egress switches back to it. The fallback policy

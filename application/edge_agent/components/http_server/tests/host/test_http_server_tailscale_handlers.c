@@ -48,9 +48,14 @@ char *http_server_alloc_scratch_buffer(void)
 
 esp_err_t http_server_send_json_response(httpd_req_t *req, cJSON *root)
 {
-    (void)req;
+    char *json = cJSON_PrintUnformatted(root);
+    CHECK(json != NULL);
+    esp_err_t err = json != NULL
+                        ? httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN)
+                        : ESP_ERR_NO_MEM;
+    free(json);
     cJSON_Delete(root);
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t httpd_register_uri_handler(httpd_handle_t server,
@@ -159,6 +164,16 @@ static esp_err_t reconnect(http_server_tailscale_operation_t *out)
     return ESP_OK;
 }
 
+static esp_err_t get_status(http_server_tailscale_status_t *out)
+{
+    out->enabled = true;
+    out->connected = true;
+    snprintf(out->dns_egress, sizeof(out->dns_egress), "sta_bypass");
+    out->dns_bypass_active = true;
+    out->dns_bypass_count = 2u;
+    return ESP_OK;
+}
+
 static esp_err_t (*find_handler(const char *uri, httpd_method_t method))(
     httpd_req_t *req)
 {
@@ -226,15 +241,25 @@ static void test_valid_body_reaches_callback_once(void)
     CHECK(strcmp(response_status, "200 OK") == 0);
 }
 
+static void test_status_serializes_dns_compatibility_state(void)
+{
+    invoke("/api/tailscale/status", HTTP_GET, "", 0u);
+    CHECK(strstr(response_body, "\"dns_egress\":\"sta_bypass\"") != NULL);
+    CHECK(strstr(response_body, "\"dns_bypass_active\":true") != NULL);
+    CHECK(strstr(response_body, "\"dns_bypass_count\":2") != NULL);
+}
+
 int main(void)
 {
     test_context.services.set_tailscale_exit_node = set_exit_node;
     test_context.services.clear_tailscale_exit_node = clear_exit_node;
     test_context.services.reconnect_tailscale = reconnect;
+    test_context.services.get_tailscale_status = get_status;
     CHECK(http_server_register_tailscale_routes((httpd_handle_t)1) == ESP_OK);
 
     test_malformed_bodies_never_reach_mutation_callbacks();
     test_valid_body_reaches_callback_once();
+    test_status_serializes_dns_compatibility_state();
 
     if (failures != 0) {
         fprintf(stderr, "%d failure(s)\n", failures);

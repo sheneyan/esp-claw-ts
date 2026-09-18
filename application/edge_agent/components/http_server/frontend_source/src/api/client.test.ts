@@ -13,6 +13,9 @@ const diagnosticFixture = {
   exit_node: '100.64.0.10',
   state: 'active',
   egress: 'tailscale',
+  dns_egress: 'sta_bypass',
+  dns_bypass_active: true,
+  dns_bypass_count: 2,
   last_error: '',
   derp: {
     active: { id: 17, name: 'Seattle' },

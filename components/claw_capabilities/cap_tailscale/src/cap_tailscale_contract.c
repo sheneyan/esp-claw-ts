@@ -386,6 +386,13 @@ esp_err_t cap_tailscale_render_status_json(const cap_tailscale_status_t *status,
     cap_tailscale_json_append_string(&writer, status->exit_state, sizeof(status->exit_state));
     cap_tailscale_json_append_literal(&writer, ",\"egress\":");
     cap_tailscale_json_append_string(&writer, status->egress, sizeof(status->egress));
+    cap_tailscale_json_append_literal(&writer, ",\"dns_egress\":");
+    cap_tailscale_json_append_string(&writer, status->dns_egress,
+                                     sizeof(status->dns_egress));
+    cap_tailscale_json_append_literal(&writer, ",\"dns_bypass_active\":");
+    cap_tailscale_json_append_bool(&writer, status->dns_bypass_active);
+    cap_tailscale_json_append_literal(&writer, ",\"dns_bypass_count\":");
+    cap_tailscale_json_append_uint(&writer, status->dns_bypass_count);
     cap_tailscale_json_append_literal(&writer, ",\"last_error\":");
     cap_tailscale_json_append_string(&writer, status->last_error, sizeof(status->last_error));
     cap_tailscale_json_append_literal(&writer, ",\"derp\":{\"active\":");

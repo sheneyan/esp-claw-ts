@@ -103,6 +103,9 @@ const connectedStatus = {
   exit_node: '',
   exit_state: 'disabled',
   egress: 'sta',
+  dns_egress: 'sta',
+  dns_bypass_active: false,
+  dns_bypass_count: 0,
   last_error: '',
   auth_key_set: true,
   heap_internal_free: 1000,
@@ -154,6 +157,24 @@ describe('TailscalePage Exit Node control', () => {
     expect(await screen.findByLabelText('Exit Node')).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /regular Wi-Fi/i })).toBeInTheDocument();
     expect(await screen.findByText('No Exit Nodes available.')).toBeInTheDocument();
+  });
+
+  it('shows the local-DNS compatibility warning while Exit Node DNS bypass is active', async () => {
+    api.fetchStatus.mockResolvedValue({
+      ...connectedStatus,
+      exit_node: onlineNode.ip,
+      exit_state: 'active',
+      egress: 'exit',
+      dns_egress: 'sta_bypass',
+      dns_bypass_active: true,
+      dns_bypass_count: 2,
+    });
+    render(() => <TailscalePage />);
+
+    expect(await screen.findByText('Local Wi-Fi DNS (2 resolvers)')).toBeInTheDocument();
+    expect(
+      screen.getByText(/DNS queries use local Wi-Fi and may be visible to the local resolver or ISP/i),
+    ).toBeInTheDocument();
   });
 
   it('keeps the Exit Node control visible while configuration is loading', async () => {
