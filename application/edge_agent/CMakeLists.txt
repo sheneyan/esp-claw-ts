@@ -28,6 +28,25 @@ if(EDGE_AGENT_TS_CLAW_BOARD_CONFIG)
     file(MAKE_DIRECTORY "${EDGE_AGENT_MICROLINK_COMPONENT_DIR}")
     file(COPY "${EDGE_AGENT_MICROLINK_SOURCE_DIR}/"
          DESTINATION "${EDGE_AGENT_MICROLINK_COMPONENT_DIR}")
+
+    # ESP-IDF 6 resolves Espressif's cJSON package as espressif__cjson. Keep
+    # the vendored MicroLink source intact and update only its disposable
+    # build copy, which still declares the legacy json component name.
+    set(EDGE_AGENT_MICROLINK_CMAKE
+        "${EDGE_AGENT_MICROLINK_COMPONENT_DIR}/CMakeLists.txt")
+    file(READ "${EDGE_AGENT_MICROLINK_CMAKE}" EDGE_AGENT_MICROLINK_CMAKE_SOURCE)
+    set(EDGE_AGENT_MICROLINK_CMAKE_ORIGINAL
+        "${EDGE_AGENT_MICROLINK_CMAKE_SOURCE}")
+    string(REPLACE "\n    json\n" "\n    espressif__cjson\n"
+        EDGE_AGENT_MICROLINK_CMAKE_SOURCE
+        "${EDGE_AGENT_MICROLINK_CMAKE_SOURCE}")
+    if(EDGE_AGENT_MICROLINK_CMAKE_SOURCE STREQUAL
+       EDGE_AGENT_MICROLINK_CMAKE_ORIGINAL)
+        message(FATAL_ERROR
+            "MicroLink compatibility copy no longer has the expected json dependency")
+    endif()
+    file(WRITE "${EDGE_AGENT_MICROLINK_CMAKE}"
+        "${EDGE_AGENT_MICROLINK_CMAKE_SOURCE}")
     microlink_apply_upstream_bind_patch("${EDGE_AGENT_MICROLINK_COMPONENT_DIR}")
 
     list(APPEND EXTRA_COMPONENT_DIRS
