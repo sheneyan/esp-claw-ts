@@ -30,6 +30,9 @@ CONFIG_ML_ENABLE_CELLULAR=n
 # MicroLink's ESP-IDF examples use the same compatibility path.
 CONFIG_LWIP_PPP_SUPPORT=y
 
+# Exit Node HTTPS compatibility validated with WireGuard MTU 1280.
+CONFIG_LWIP_TCP_MSS=1240
+
 # Required by the MicroLink Noise transport.
 CONFIG_MBEDTLS_CHACHA20_C=y
 CONFIG_MBEDTLS_POLY1305_C=y

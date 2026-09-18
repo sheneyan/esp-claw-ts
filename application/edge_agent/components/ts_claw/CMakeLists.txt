@@ -14,6 +14,7 @@ if(_TS_CLAW_BOARD_MARKER)
             "ts_claw_dns_runtime.c"
             "ts_claw_exit_probe_publication.c"
             "ts_claw_diagnostics.c"
+            "ts_claw_mtu_policy.c"
             "ts_claw_policy.c"
             "ts_claw_route_hook.c"
             "ts_claw_runtime_control.c"

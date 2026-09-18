@@ -94,9 +94,32 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(test_ts_claw_runtime_control PRIVATE -Wall -Wextra -Werror -pedantic)
 endif()
 
+add_executable(test_ts_claw_mtu_policy
+    test_ts_claw_mtu_policy.c
+    ../../ts_claw_mtu_policy.c
+)
+
+target_include_directories(test_ts_claw_mtu_policy PRIVATE
+    stubs
+    ../..
+    ../../include
+)
+
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(test_ts_claw_mtu_policy PRIVATE
+        -Wall -Wextra -Werror -pedantic)
+endif()
+
 add_test(NAME ts_claw_route_hook COMMAND test_ts_claw_route_hook)
 add_test(NAME ts_claw_dns_policy COMMAND test_ts_claw_dns_policy)
 add_test(NAME ts_claw_exit_probe_publication COMMAND test_ts_claw_exit_probe_publication)
 add_test(NAME ts_claw_policy COMMAND test_ts_claw_policy)
 add_test(NAME ts_claw_diagnostics COMMAND test_ts_claw_diagnostics)
 add_test(NAME ts_claw_runtime_control COMMAND test_ts_claw_runtime_control)
+add_test(NAME ts_claw_mtu_policy COMMAND test_ts_claw_mtu_policy)
+add_test(
+    NAME ts_claw_n16r8_mss
+    COMMAND ${CMAKE_COMMAND}
+        -DBOARD_DEFAULTS=${CMAKE_CURRENT_LIST_DIR}/../../../../boards/local/esp32_s3_n16r8_ts_claw/sdkconfig.defaults.board
+        -P ${CMAKE_CURRENT_LIST_DIR}/verify_n16r8_mss.cmake
+)

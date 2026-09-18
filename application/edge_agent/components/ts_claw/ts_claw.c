@@ -3,6 +3,7 @@
 #include "ts_claw.h"
 #include "ts_claw_dns_runtime.h"
 #include "ts_claw_exit_probe_publication.h"
+#include "ts_claw_mtu_policy.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -937,6 +938,12 @@ static void worker_refresh_status(void)
 
 static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
 {
+    esp_err_t mtu_err = ts_claw_apply_wg_mtu(wg_netif);
+    if (mtu_err != ESP_OK) {
+        set_last_error("wireguard MTU apply failed");
+        return mtu_err;
+    }
+
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
     config.count = ESP_PING_COUNT_INFINITE;
     config.interval_ms = TS_CLAW_EXIT_PROBE_INTERVAL_MS;
