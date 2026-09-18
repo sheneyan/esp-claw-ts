@@ -1,29 +1,35 @@
 #include "ts_claw_dns_runtime.h"
 
-#include "lwip/dns.h"
-#include "lwip/ip_addr.h"
+#include "esp_netif.h"
+#include "lwip/ip4_addr.h"
 
 #include <string.h>
 
-static bool read_lwip_dns_server(size_t index,
-                                 ts_claw_dns_server_t *server,
-                                 void *ctx)
+static bool read_sta_dns_server(size_t index,
+                                ts_claw_dns_server_t *server,
+                                void *ctx)
 {
-    (void)ctx;
-    if (server == NULL || index >= DNS_MAX_SERVERS) {
+    esp_netif_t *sta_netif = ctx;
+    if (server == NULL || sta_netif == NULL ||
+        index >= (size_t)ESP_NETIF_DNS_MAX) {
         return false;
     }
 
-    const ip_addr_t *address = dns_getserver((u8_t)index);
-    server->present = address != NULL;
-    server->ipv4 = address != NULL && IP_IS_V4(address);
+    esp_netif_dns_info_t dns = {0};
+    if (esp_netif_get_dns_info(sta_netif, (esp_netif_dns_type_t)index,
+                               &dns) != ESP_OK) {
+        return true;
+    }
+    server->present = true;
+    server->ipv4 = dns.ip.type == ESP_IPADDR_TYPE_V4;
     server->host_order_ip = server->ipv4
-                                ? lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(address)))
+                                ? lwip_ntohl(dns.ip.u_addr.ip4.addr)
                                 : 0u;
     return true;
 }
 
-void ts_claw_dns_runtime_refresh(bool exit_active,
+void ts_claw_dns_runtime_refresh(esp_netif_t *sta_netif,
+                                 bool exit_active,
                                  ts_claw_dns_apply_t apply,
                                  ts_claw_dns_runtime_result_t *result)
 {
@@ -32,9 +38,10 @@ void ts_claw_dns_runtime_refresh(bool exit_active,
                               : TS_CLAW_DNS_EGRESS_STA,
     };
 
-    if (exit_active) {
+    if (exit_active && sta_netif != NULL) {
         ts_claw_dns_refresh_result_t captured = {0};
-        ts_claw_dns_refresh(read_lwip_dns_server, NULL, DNS_MAX_SERVERS,
+        ts_claw_dns_refresh(read_sta_dns_server, sta_netif,
+                            (size_t)ESP_NETIF_DNS_MAX,
                             apply, &captured);
         next.egress = captured.egress;
         next.bypass_count = (uint8_t)captured.bypass_count;

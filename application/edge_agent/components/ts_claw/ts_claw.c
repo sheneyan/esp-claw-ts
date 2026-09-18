@@ -2,6 +2,7 @@
 #include "ts_claw_diagnostics.h"
 #include "ts_claw.h"
 #include "ts_claw_dns_runtime.h"
+#include "ts_claw_exit_probe_publication.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -80,7 +81,7 @@ typedef struct {
     struct netif *exit_ping_wg_netif;
     uint32_t exit_ping_target;
     uint64_t exit_ping_recreate_after_ms;
-    bool exit_ping_accept_results;
+    ts_claw_exit_probe_publication_t exit_probe_publication;
     bool exit_ping_stop_requested;
     bool exit_ping_quiesced;
     ts_claw_runtime_destroy_retry_t destroy_retry;
@@ -105,13 +106,13 @@ typedef struct {
     ts_claw_status_t status;
     ts_claw_dns_egress_t dns_egress;
     uint8_t dns_bypass_count;
+    uint32_t exit_route_generation;
 } ts_claw_context_t;
 
 static const char *TAG = "ts_claw";
 static ts_claw_context_t s_ts;
 
 static esp_err_t send_sync_event(ts_event_t *event);
-static void refresh_dns_bypass(void);
 static void worker_schedule_destroy_retry(
     ts_claw_runtime_destroy_retry_mode_t mode,
     uint64_t current_ms);
@@ -153,106 +154,108 @@ static void update_exit_status_locked(void)
                 exit_active ? ts_claw_dns_egress_name(s_ts.dns_egress) : "sta");
 }
 
-static void set_exit_usable(bool usable)
+static void invalidate_exit_route_locked(void)
 {
-    if (!usable) {
-        ts_claw_route_hook_set_exit_active(false);
-    }
-    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    ts_exit_policy_set_tunnel(&s_ts.exit_policy, usable);
-    const bool exit_active = ts_exit_policy_routes_public(&s_ts.exit_policy);
-    if (!exit_active) {
-        s_ts.dns_bypass_count = 0u;
-    }
-    update_exit_status_locked();
-    xSemaphoreGive(s_ts.lock);
-    if (exit_active) {
-        refresh_dns_bypass();
-        ts_claw_route_hook_set_exit_active(true);
-        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-        update_exit_status_locked();
-        xSemaphoreGive(s_ts.lock);
-    } else {
-        ts_claw_route_hook_set_exit_active(false);
-        ts_claw_dns_runtime_result_t dns_result = {0};
-        ts_claw_dns_runtime_refresh(false, ts_claw_route_hook_set_dns_bypass,
-                                    &dns_result);
-        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-        s_ts.dns_egress = dns_result.egress;
-        s_ts.dns_bypass_count = dns_result.bypass_count;
-        update_exit_status_locked();
-        xSemaphoreGive(s_ts.lock);
+    s_ts.exit_route_generation++;
+    if (s_ts.exit_route_generation == 0u) {
+        s_ts.exit_route_generation = 1u;
     }
 }
 
-static void refresh_dns_bypass(void)
+static void set_exit_usable(bool usable)
 {
-    const ts_claw_route_state_t old_state = ts_claw_route_hook_get_state();
-    ts_claw_dns_runtime_result_t result = {0};
-    ts_claw_dns_runtime_refresh(true, ts_claw_route_hook_set_dns_bypass,
-                                &result);
-
-    bool changed = old_state.dns_bypass_count != result.bypass_count;
-    for (size_t i = 0; !changed && i < result.bypass_count; ++i) {
-        changed = old_state.dns_bypass[i] != result.bypass[i];
+    if (!usable) {
+        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+        invalidate_exit_route_locked();
+        ts_exit_policy_set_tunnel(&s_ts.exit_policy, false);
+        s_ts.dns_egress = TS_CLAW_DNS_EGRESS_STA;
+        s_ts.dns_bypass_count = 0u;
+        ts_claw_route_hook_set_exit_active(false);
+        ts_claw_route_hook_set_dns_bypass(NULL, 0u);
+        update_exit_status_locked();
+        xSemaphoreGive(s_ts.lock);
+        return;
     }
 
+    esp_netif_t *sta_netif = NULL;
+    uint32_t generation = 0u;
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    s_ts.dns_egress = result.egress;
-    s_ts.dns_bypass_count = (uint8_t)result.bypass_count;
+    ts_exit_policy_set_tunnel(&s_ts.exit_policy, true);
+    const bool exit_active = ts_exit_policy_routes_public(&s_ts.exit_policy);
+    sta_netif = s_ts.sta_netif;
+    generation = s_ts.exit_route_generation;
     xSemaphoreGive(s_ts.lock);
 
-    if (changed) {
-        ESP_LOGI(TAG, "Exit Node DNS compatibility bypass: %u public resolver(s)",
-                 (unsigned)result.bypass_count);
-        for (size_t i = 0; i < result.bypass_count; ++i) {
-            ESP_LOGI(TAG, "DNS resolver[%u]=%u.%u.%u.%u via STA",
-                     (unsigned)i,
-                     (unsigned)((result.bypass[i] >> 24) & 0xffu),
-                     (unsigned)((result.bypass[i] >> 16) & 0xffu),
-                     (unsigned)((result.bypass[i] >> 8) & 0xffu),
-                     (unsigned)(result.bypass[i] & 0xffu));
-        }
+    ts_claw_dns_runtime_result_t dns_result = {0};
+    if (exit_active && sta_netif != NULL) {
+        ts_claw_dns_runtime_refresh(sta_netif, true, NULL, &dns_result);
     }
+    const ts_claw_route_state_t old_state = ts_claw_route_hook_get_state();
+
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    const bool still_valid = exit_active && sta_netif != NULL &&
+                             generation == s_ts.exit_route_generation &&
+                             s_ts.wifi_has_ip && s_ts.sta_netif == sta_netif &&
+                             ts_exit_policy_routes_public(&s_ts.exit_policy);
+    if (still_valid) {
+        bool changed = old_state.dns_bypass_count != dns_result.bypass_count;
+        for (size_t i = 0; !changed && i < dns_result.bypass_count; ++i) {
+            changed = old_state.dns_bypass[i] != dns_result.bypass[i];
+        }
+        ts_claw_route_hook_set_dns_bypass(dns_result.bypass,
+                                          dns_result.bypass_count);
+        ts_claw_route_hook_set_exit_active(true);
+        s_ts.dns_egress = dns_result.egress;
+        s_ts.dns_bypass_count = dns_result.bypass_count;
+        update_exit_status_locked();
+        if (changed) {
+            ESP_LOGI(TAG,
+                     "Exit Node DNS compatibility bypass: %u public resolver(s), mode=%s",
+                     (unsigned)dns_result.bypass_count,
+                     ts_claw_dns_egress_name(dns_result.egress));
+        }
+    } else if (!ts_exit_policy_routes_public(&s_ts.exit_policy)) {
+        s_ts.dns_egress = TS_CLAW_DNS_EGRESS_STA;
+        s_ts.dns_bypass_count = 0u;
+        ts_claw_route_hook_set_exit_active(false);
+        ts_claw_route_hook_set_dns_bypass(NULL, 0u);
+        update_exit_status_locked();
+    }
+    xSemaphoreGive(s_ts.lock);
 }
 
 static void set_exit_probe_accept_results(bool accept)
 {
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    s_ts.exit_ping_accept_results = accept;
+    ts_claw_exit_probe_publication_set_accept(&s_ts.exit_probe_publication,
+                                               accept);
     xSemaphoreGive(s_ts.lock);
 }
 
 static void record_exit_probe(esp_ping_handle_t handle, bool success)
 {
-    bool exit_active;
-
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-    if (handle != s_ts.exit_ping || !s_ts.exit_ping_accept_results) {
-        xSemaphoreGive(s_ts.lock);
-        return;
-    }
-    ts_exit_policy_on_probe(&s_ts.exit_policy, success);
-    exit_active = ts_exit_policy_routes_public(&s_ts.exit_policy);
+    const uint32_t generation = ts_claw_exit_probe_publication_begin(
+        &s_ts.exit_probe_publication, handle == s_ts.exit_ping);
     xSemaphoreGive(s_ts.lock);
 
-    if (exit_active) {
-        refresh_dns_bypass();
-        ts_claw_route_hook_set_exit_active(true);
+    if (generation != 0u) {
         xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-        update_exit_status_locked();
-        xSemaphoreGive(s_ts.lock);
-    } else {
-        ts_claw_route_hook_set_exit_active(false);
-        ts_claw_dns_runtime_result_t dns_result = {0};
-        ts_claw_dns_runtime_refresh(false, ts_claw_route_hook_set_dns_bypass,
-                                    &dns_result);
-        xSemaphoreTake(s_ts.lock, portMAX_DELAY);
-        s_ts.dns_egress = dns_result.egress;
-        s_ts.dns_bypass_count = dns_result.bypass_count;
-        update_exit_status_locked();
+        (void)ts_claw_exit_probe_publication_complete(
+            &s_ts.exit_probe_publication, generation, success);
         xSemaphoreGive(s_ts.lock);
     }
+}
+
+static void worker_consume_exit_probe_result(void)
+{
+    bool success = false;
+    xSemaphoreTake(s_ts.lock, portMAX_DELAY);
+    if (ts_claw_exit_probe_publication_take(&s_ts.exit_probe_publication,
+                                            &success)) {
+        ts_exit_policy_on_probe(&s_ts.exit_policy, success);
+    }
+    xSemaphoreGive(s_ts.lock);
 }
 
 static void exit_probe_on_success(esp_ping_handle_t handle, void *args)
@@ -287,7 +290,8 @@ static esp_err_t worker_retire_exit_probe(void)
 {
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     esp_ping_handle_t ping = s_ts.exit_ping;
-    s_ts.exit_ping_accept_results = false;
+    ts_claw_exit_probe_publication_set_accept(&s_ts.exit_probe_publication,
+                                               false);
     bool stop_requested = s_ts.exit_ping_stop_requested;
     bool quiesced = s_ts.exit_ping_quiesced;
     if (ping != NULL && !stop_requested) {
@@ -336,7 +340,8 @@ static esp_err_t worker_retire_exit_probe(void)
         s_ts.exit_ping = NULL;
         s_ts.exit_ping_wg_netif = NULL;
         s_ts.exit_ping_target = 0u;
-        s_ts.exit_ping_accept_results = false;
+        ts_claw_exit_probe_publication_set_accept(
+            &s_ts.exit_probe_publication, false);
         s_ts.exit_ping_stop_requested = false;
         s_ts.exit_ping_quiesced = false;
         s_ts.exit_ping_recreate_after_ms =
@@ -957,7 +962,8 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
         s_ts.exit_ping = ping;
         s_ts.exit_ping_wg_netif = wg_netif;
         s_ts.exit_ping_target = s_ts.desired_exit_node_ip;
-        s_ts.exit_ping_accept_results = false;
+        ts_claw_exit_probe_publication_set_accept(
+            &s_ts.exit_probe_publication, false);
         s_ts.exit_ping_stop_requested = false;
         s_ts.exit_ping_quiesced = false;
         xSemaphoreGive(s_ts.lock);
@@ -972,7 +978,8 @@ static esp_err_t worker_start_exit_probe(struct netif *wg_netif)
                     s_ts.exit_ping = NULL;
                     s_ts.exit_ping_wg_netif = NULL;
                     s_ts.exit_ping_target = 0u;
-                    s_ts.exit_ping_accept_results = false;
+                    ts_claw_exit_probe_publication_set_accept(
+                        &s_ts.exit_probe_publication, false);
                     s_ts.exit_ping_stop_requested = false;
                     s_ts.exit_ping_quiesced = false;
                 }
@@ -1014,6 +1021,8 @@ static void worker_manage_exit_probe(uint64_t current_ms)
         ts_claw_route_hook_set_tunnel_available(false);
         return;
     }
+
+    worker_consume_exit_probe_result();
 
     xSemaphoreTake(s_ts.lock, portMAX_DELAY);
     esp_ping_handle_t ping = s_ts.exit_ping;
@@ -1364,6 +1373,8 @@ esp_err_t ts_claw_init(const ts_claw_config_t *config)
     copy_string(s_ts.status.dns_egress, sizeof(s_ts.status.dns_egress),
                 "unavailable");
     s_ts.dns_egress = TS_CLAW_DNS_EGRESS_UNAVAILABLE;
+    s_ts.exit_route_generation = 1u;
+    ts_claw_exit_probe_publication_init(&s_ts.exit_probe_publication);
     ts_resource_guard_init(&s_ts.resource_guard);
     ts_exit_policy_init(&s_ts.exit_policy, config->exit_node_ip != 0u);
     ts_claw_runtime_control_init(&s_ts.runtime_control, &s_runtime_ops, NULL);
