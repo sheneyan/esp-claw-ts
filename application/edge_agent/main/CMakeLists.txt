@@ -3,6 +3,8 @@ set(EDGE_AGENT_MAIN_SRCS
     "config_persistence.c"
     "edge_agent_version.c"
     "main.c"
+    "wifi_profile_runtime.c"
+    "wifi_profile_worker.c"
 )
 set(EDGE_AGENT_MAIN_PRIV_REQUIRES "")
 if(CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW)

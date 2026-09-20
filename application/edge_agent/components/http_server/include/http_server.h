@@ -25,6 +25,24 @@ typedef struct {
     const char *wifi_mode;
 } http_server_wifi_status_t;
 
+#define HTTP_SERVER_WIFI_PROFILE_MAX          5
+#define HTTP_SERVER_WIFI_PROFILE_SSID_LEN     33
+#define HTTP_SERVER_WIFI_PROFILE_PASSWORD_LEN 65
+
+typedef struct {
+    char ssid[HTTP_SERVER_WIFI_PROFILE_SSID_LEN];
+    bool configured;
+    bool active;
+    bool password_set;
+} http_server_wifi_profile_summary_t;
+
+typedef struct {
+    char ssid[HTTP_SERVER_WIFI_PROFILE_SSID_LEN];
+    char password[HTTP_SERVER_WIFI_PROFILE_PASSWORD_LEN];
+    bool password_supplied;
+    bool clear_password;
+} http_server_wifi_profile_update_t;
+
 typedef struct {
     bool active;
     bool configured;
@@ -95,6 +113,11 @@ typedef struct {
     esp_err_t (*save_config)(const app_config_t *before,
                              const app_config_t *after);
     esp_err_t (*get_wifi_status)(http_server_wifi_status_t *status);
+    /* Returns the number of copied slots, or a negative esp_err_t value. */
+    int (*get_wifi_profiles)(http_server_wifi_profile_summary_t *profiles, int capacity);
+    esp_err_t (*save_wifi_profiles)(const http_server_wifi_profile_update_t *profiles,
+                                    size_t count);
+    esp_err_t (*connect_wifi_profile)(size_t index);
     esp_err_t (*restart_device)(void);
     esp_err_t (*wechat_login_start)(const char *account_id, bool force);
     esp_err_t (*wechat_login_get_status)(http_server_wechat_login_status_t *status);

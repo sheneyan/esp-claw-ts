@@ -10,6 +10,7 @@ typedef int httpd_err_code_t;
 typedef enum {
     HTTP_GET = 0,
     HTTP_POST,
+    HTTP_PUT,
     HTTP_DELETE,
 } httpd_method_t;
 

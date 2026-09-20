@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "wifi_manager.h"
+#include "wifi_profile_runtime.h"
+#include "wifi_profile_worker.h"
 #include "time.h"
 #include "nvs_flash.h"
 #include "http_server.h"
@@ -48,6 +50,8 @@ static const char *TAG = "app";
 
 static app_config_t *s_config;
 static app_claw_config_t *s_claw_config;
+static wifi_profile_runtime_t s_wifi_profile_runtime;
+static wifi_profile_worker_handle_t s_wifi_profile_worker;
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
 static bool s_ts_claw_initialized;
 static tailscale_service_handle_t s_tailscale_service;
@@ -115,6 +119,13 @@ static void on_wifi_state_changed(bool connected, void *user_ctx)
         ESP_LOGW(TAG, "Failed to update network UI: %s", esp_err_to_name(err));
     }
 
+    if (s_wifi_profile_worker) {
+        esp_err_t worker_err = wifi_profile_worker_notify(s_wifi_profile_worker, connected);
+        if (worker_err != ESP_OK && worker_err != ESP_ERR_TIMEOUT) {
+            ESP_LOGW(TAG, "Failed to notify Wi-Fi profile worker: %s",
+                     esp_err_to_name(worker_err));
+        }
+    }
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
     if (s_ts_claw_initialized) {
         esp_netif_t *sta_netif = connected ? wifi_manager_get_sta_netif() : NULL;
@@ -199,6 +210,81 @@ static esp_err_t main_get_wifi_status(http_server_wifi_status_t *status)
     status->ap_ip = wifi_status.ap_ip;
     status->wifi_mode = wifi_status.mode;
     return ESP_OK;
+}
+
+static int main_get_wifi_profiles(http_server_wifi_profile_summary_t *profiles, int capacity)
+{
+    if (!profiles || capacity < (int)WIFI_PROFILES_MAX_COUNT) return -ESP_ERR_INVALID_ARG;
+    wifi_manager_status_t status = {0};
+    wifi_manager_get_status(&status);
+    for (size_t index = 0; index < WIFI_PROFILES_MAX_COUNT; ++index) {
+        const wifi_profile_t *saved = &s_wifi_profile_runtime.profiles.entries[index];
+        strlcpy(profiles[index].ssid, saved->ssid, sizeof(profiles[index].ssid));
+        profiles[index].configured = saved->ssid[0] != '\0';
+        profiles[index].active = status.sta_connected &&
+                                 s_wifi_profile_runtime.selected_index == (int)index;
+        profiles[index].password_set = saved->password[0] != '\0';
+    }
+    return (int)WIFI_PROFILES_MAX_COUNT;
+}
+
+static esp_err_t main_save_wifi_profiles(const http_server_wifi_profile_update_t *updates,
+                                         size_t count)
+{
+    ESP_RETURN_ON_FALSE(updates || count == 0, ESP_ERR_INVALID_ARG, TAG,
+                        "Wi-Fi profile updates are NULL");
+    ESP_RETURN_ON_FALSE(count <= WIFI_PROFILES_MAX_COUNT, ESP_ERR_INVALID_SIZE, TAG,
+                        "Too many Wi-Fi profiles");
+
+    wifi_profiles_t next = {0};
+    for (size_t index = 0; index < count; ++index) {
+        strlcpy(next.entries[index].ssid, updates[index].ssid,
+                sizeof(next.entries[index].ssid));
+        if (updates[index].clear_password) continue;
+        if (updates[index].password_supplied) {
+            strlcpy(next.entries[index].password, updates[index].password,
+                    sizeof(next.entries[index].password));
+            continue;
+        }
+        for (size_t old_index = 0; old_index < WIFI_PROFILES_MAX_COUNT; ++old_index) {
+            const wifi_profile_t *old = &s_wifi_profile_runtime.profiles.entries[old_index];
+            if (strcmp(old->ssid, updates[index].ssid) == 0) {
+                strlcpy(next.entries[index].password, old->password,
+                        sizeof(next.entries[index].password));
+                break;
+            }
+        }
+    }
+
+    const char *validation_message = NULL;
+    ESP_RETURN_ON_ERROR(wifi_profiles_validate(&next, &validation_message), TAG,
+                        "Invalid Wi-Fi profiles: %s",
+                        validation_message ? validation_message : "unknown");
+    ESP_RETURN_ON_ERROR(wifi_profiles_save(&next), TAG, "Failed to save Wi-Fi profiles");
+
+    char active_ssid[WIFI_PROFILE_SSID_LEN] = {0};
+    if (s_wifi_profile_runtime.selected_index >= 0 &&
+        s_wifi_profile_runtime.selected_index < (int)WIFI_PROFILES_MAX_COUNT) {
+        strlcpy(active_ssid,
+                s_wifi_profile_runtime.profiles.entries[s_wifi_profile_runtime.selected_index].ssid,
+                sizeof(active_ssid));
+    }
+    s_wifi_profile_runtime.profiles = next;
+    s_wifi_profile_runtime.selected_index = -1;
+    for (size_t index = 0; active_ssid[0] && index < WIFI_PROFILES_MAX_COUNT; ++index) {
+        if (strcmp(active_ssid, next.entries[index].ssid) == 0) {
+            s_wifi_profile_runtime.selected_index = (int)index;
+            break;
+        }
+    }
+    return ESP_OK;
+}
+
+static esp_err_t main_connect_wifi_profile(size_t index)
+{
+    ESP_RETURN_ON_FALSE(s_wifi_profile_worker, ESP_ERR_INVALID_STATE, TAG,
+                        "Wi-Fi profile worker is unavailable");
+    return wifi_profile_worker_connect_now(s_wifi_profile_worker, index);
 }
 
 static void main_restart_task(void *arg)
@@ -1033,6 +1119,9 @@ void app_main(void)
             .load_config = main_load_config,
             .save_config = main_save_config_changes,
             .get_wifi_status = main_get_wifi_status,
+            .get_wifi_profiles = main_get_wifi_profiles,
+            .save_wifi_profiles = main_save_wifi_profiles,
+            .connect_wifi_profile = main_connect_wifi_profile,
             .restart_device = main_restart_device,
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT
             .wechat_login_start = main_wechat_login_start,
@@ -1054,12 +1143,13 @@ void app_main(void)
     log_wifi_startup_config(s_config);
 
     wifi_manager_config_t wifi_config = {
-        .sta_ssid = s_config->wifi_ssid,
-        .sta_password = s_config->wifi_password,
         .ap_ssid = s_config->ap_ssid[0] ? s_config->ap_ssid : NULL,
         .ap_password = s_config->ap_password[0] ? s_config->ap_password : NULL,
         .ap_behavior = s_config->ap_behavior,
     };
+    ESP_ERROR_CHECK(wifi_profile_runtime_load(&s_wifi_profile_runtime,
+                                              s_config->wifi_ssid,
+                                              s_config->wifi_password));
 #if CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW
     wifi_config.ap_behavior = s_config->ap_behavior[0] ? s_config->ap_behavior : "close_on_sta";
     wifi_config.ap_ip = "192.168.237.1";
@@ -1082,24 +1172,9 @@ void app_main(void)
             ESP_LOGW(TAG, "Captive DNS could not start, portal pop-up disabled");
         }
 
-        if (s_config->wifi_ssid[0] != '\0') {
-            esp_err_t wait_err = wifi_manager_wait_connected(30000);
-            if (wait_err == ESP_OK) {
-                wifi_manager_status_t status = {0};
-                wifi_manager_get_status(&status);
-                ESP_LOGI(TAG, "Wi-Fi STA ready: %s", status.sta_ip);
-            } else if (wait_err == ESP_ERR_TIMEOUT) {
-                wifi_manager_status_t status = {0};
-                wifi_manager_get_status(&status);
-                ESP_LOGW(TAG,
-                         "Wi-Fi STA not connected within wait window; retrying in background: mode=%s ap_active=%d ap_ip=%s",
-                         status.mode ? status.mode : "off",
-                         status.ap_active,
-                         status.ap_ip ? status.ap_ip : "0.0.0.0");
-            } else {
-                ESP_LOGW(TAG, "Wi-Fi STA wait returned error: %s", esp_err_to_name(wait_err));
-            }
-        }
+        ESP_ERROR_CHECK(wifi_profile_worker_start(&s_wifi_profile_runtime,
+                                                  &wifi_config,
+                                                  &s_wifi_profile_worker));
 
         wifi_manager_status_t status = {0};
         wifi_manager_get_status(&status);

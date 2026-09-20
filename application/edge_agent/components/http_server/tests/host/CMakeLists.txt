@@ -27,6 +27,12 @@ add_executable(test_http_server_tailscale_handlers
     ${CJSON_SOURCE}
 )
 
+add_executable(test_http_server_wifi_profiles_handlers
+    test_http_server_wifi_profiles_handlers.c
+    ../../http_server_wifi_profiles_api.c
+    ${CJSON_SOURCE}
+)
+
 if(CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
     set_source_files_properties(${CJSON_SOURCE} PROPERTIES
         COMPILE_OPTIONS -Wno-deprecated-declarations
@@ -36,6 +42,7 @@ endif()
 set(HTTP_SERVER_TEST_TARGETS
     test_http_server_tailscale_request
     test_http_server_tailscale_handlers
+    test_http_server_wifi_profiles_handlers
 )
 
 foreach(test_target IN LISTS HTTP_SERVER_TEST_TARGETS)
@@ -67,3 +74,5 @@ add_test(NAME http_server_tailscale_request
          COMMAND test_http_server_tailscale_request)
 add_test(NAME http_server_tailscale_handlers
          COMMAND test_http_server_tailscale_handlers)
+add_test(NAME http_server_wifi_profiles_handlers
+         COMMAND test_http_server_wifi_profiles_handlers)
