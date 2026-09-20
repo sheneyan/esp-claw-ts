@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "wifi_manager.c"
         "wifi_manager_ap_policy.c"
+        "wifi_manager_profile_policy.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -11,4 +12,5 @@ idf_component_register(
         esp_wifi
         freertos
         lwip
+        wifi_profiles
 )

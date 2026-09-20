@@ -1,5 +1,8 @@
 ## IDF Component Manager Manifest File
 dependencies:
+  wifi_profiles:
+    path: ../wifi_profiles
+
   espressif/esp_wifi_remote:
     version: ">=0.10,<2.0"
     rules:
