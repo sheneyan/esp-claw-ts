@@ -62,6 +62,28 @@ export const en = {
   passwordHide: 'Hide password',
   wifiValidationSsidRequired: 'Wi-Fi SSID is required.',
   wifiValidationPasswordLength: 'Wi-Fi password must be empty or at least 8 characters long.',
+  wifiProfilesLoadError: 'Failed to load saved Wi-Fi networks.',
+  wifiProfilesSaveError: 'Failed to save Wi-Fi networks.',
+  wifiProfilesConnectError: 'Failed to request the Wi-Fi switch.',
+  wifiProfilesDuplicate: 'Each saved Wi-Fi network must have a unique SSID.',
+  wifiProfilesSaved: 'Saved Wi-Fi networks updated.',
+  wifiProfilesEmpty: 'No Wi-Fi networks saved yet.',
+  wifiProfilesSave: 'Save Wi-Fi Networks',
+  wifiProfilesHint:
+    'Networks are tried from top to bottom only when disconnected. A healthy connection is not roamed automatically.',
+  wifiProfilesConnectConfirm:
+    'Switch Wi-Fi now? The current browser connection may disconnect while the device changes networks.',
+  wifiProfilesConnectAccepted:
+    'Wi-Fi switch requested. Reconnect to the device after the network changes.',
+  wifiProfilePriority: 'Priority',
+  wifiProfileActive: 'connected',
+  wifiProfileUp: 'Up',
+  wifiProfileDown: 'Down',
+  wifiProfileConnect: 'Connect now',
+  wifiProfileRemove: 'Remove',
+  wifiProfileAdd: 'Add network',
+  wifiProfilePasswordKeep: 'Leave blank to keep saved password',
+  wifiProfileOpenNetwork: 'Clear saved password (open network)',
 
   apName: 'AP SSID',
   apPassword: 'AP Password',

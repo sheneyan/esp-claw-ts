@@ -117,6 +117,20 @@ export type StatusInfo = {
   storage_base_path: string;
 };
 
+export type WifiProfileSummary = {
+  index: number;
+  ssid: string;
+  configured: boolean;
+  active: boolean;
+  password_set: boolean;
+};
+
+export type WifiProfileInput = {
+  ssid: string;
+  password?: string;
+  clear_password?: boolean;
+};
+
 export type TailscaleDnsEgress = 'sta' | 'exit' | 'mixed' | 'unavailable';
 
 export type TailscaleStatus = {
@@ -313,6 +327,39 @@ async function request<T>(
 
 export function fetchStatus(signal?: AbortSignal) {
   return request<StatusInfo>('/api/status', { signal }, 'Failed to load status');
+}
+
+export async function fetchWifiProfiles(signal?: AbortSignal) {
+  const data = await request<{ profiles: WifiProfileSummary[] }>(
+    '/api/wifi/profiles',
+    { signal },
+    'Failed to load Wi-Fi profiles',
+  );
+  return Array.isArray(data.profiles) ? data.profiles : [];
+}
+
+export function saveWifiProfiles(profiles: WifiProfileInput[]) {
+  return request<{ ok: boolean }>(
+    '/api/wifi/profiles',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profiles }),
+    },
+    'Failed to save Wi-Fi profiles',
+  );
+}
+
+export function connectWifiProfile(index: number) {
+  return request<{ accepted: boolean }>(
+    '/api/wifi/profiles/connect',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index }),
+    },
+    'Failed to switch Wi-Fi profile',
+  );
 }
 
 export function fetchTailscaleStatus(signal?: AbortSignal) {

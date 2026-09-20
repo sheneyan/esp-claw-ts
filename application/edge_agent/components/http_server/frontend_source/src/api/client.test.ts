@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { TAILSCALE_MAX_DERP_RTTS, type TailscaleDiagnosticStatus } from './client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  connectWifiProfile,
+  fetchWifiProfiles,
+  saveWifiProfiles,
+  TAILSCALE_MAX_DERP_RTTS,
+  type TailscaleDiagnosticStatus,
+} from './client';
+
+afterEach(() => vi.unstubAllGlobals());
 
 const diagnosticFixture = {
   ok: true,
@@ -45,5 +53,49 @@ describe('Tailscale diagnostic response contract', () => {
     expect(diagnosticFixture.derp.rtts.length).toBeLessThanOrEqual(TAILSCALE_MAX_DERP_RTTS);
     expect(diagnosticFixture.timing.control_rx_age_ms).toBe(5678);
     expect(diagnosticFixture.reconnect.derp_retry).toBe(4);
+  });
+});
+
+describe('Wi-Fi profile API', () => {
+  it('loads password-safe summaries', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          profiles: [
+            { index: 0, ssid: 'Office', configured: true, active: true, password_set: true },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchWifiProfiles()).resolves.toEqual([
+      { index: 0, ssid: 'Office', configured: true, active: true, password_set: true },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith('/api/wifi/profiles', expect.any(Object));
+  });
+
+  it('saves ordered profiles and requests an explicit switch', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ accepted: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    await saveWifiProfiles([{ ssid: 'Phone', password: 'secret123' }, { ssid: 'Office' }]);
+    await connectWifiProfile(1);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body)).toEqual({
+      profiles: [{ ssid: 'Phone', password: 'secret123' }, { ssid: 'Office' }],
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body)).toEqual({ index: 1 });
   });
 });
