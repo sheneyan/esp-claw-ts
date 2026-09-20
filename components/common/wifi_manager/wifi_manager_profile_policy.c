@@ -41,3 +41,26 @@ bool wifi_manager_profile_should_roam(bool sta_connected,
     (void)candidate_profile;
     return false;
 }
+
+void wifi_manager_profile_attempt_begin(wifi_manager_profile_attempt_t *attempt)
+{
+    if (attempt) {
+        attempt->next_index = 0;
+    }
+}
+
+int wifi_manager_profile_attempt_next(wifi_manager_profile_attempt_t *attempt,
+                                      const wifi_profiles_t *profiles,
+                                      const wifi_manager_profile_visible_t *visible,
+                                      size_t visible_count)
+{
+    if (!attempt) {
+        return -1;
+    }
+    int selected = wifi_manager_profile_pick_next(profiles, visible, visible_count,
+                                                  attempt->next_index);
+    if (selected >= 0) {
+        attempt->next_index = (size_t)selected + 1u;
+    }
+    return selected;
+}

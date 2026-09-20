@@ -27,6 +27,13 @@ int main(void)
     assert(!wifi_manager_profile_should_roam(true, 0, 1));
     assert(!wifi_manager_profile_should_roam(false, 0, 1));
 
+    wifi_manager_profile_attempt_t attempt = {0};
+    wifi_manager_profile_attempt_begin(&attempt);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, visible, 3) == 0);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, visible, 3) == 1);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, visible, 3) == 2);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, visible, 3) == -1);
+
     puts("wifi_manager_profile_policy: all tests passed");
     return 0;
 }
