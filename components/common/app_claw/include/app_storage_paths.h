@@ -26,6 +26,7 @@ typedef struct {
     char system_skills_root_dir[APP_CLAW_PATH_LEN];   /**< Read-only firmware-baked skills root */
     char lua_root_dir[APP_CLAW_PATH_LEN];             /**< Lua scripts root */
     char router_rules_path[APP_CLAW_FILE_PATH_LEN];   /**< Event router rules file */
+    char router_rules_fallback_path[APP_CLAW_FILE_PATH_LEN]; /**< Read-only fallback rules file */
     char scheduler_rules_path[APP_CLAW_FILE_PATH_LEN];/**< Scheduler rules file */
     char im_attachment_root[APP_CLAW_PATH_LEN];       /**< IM attachment inbox */
 } app_claw_storage_paths_t;

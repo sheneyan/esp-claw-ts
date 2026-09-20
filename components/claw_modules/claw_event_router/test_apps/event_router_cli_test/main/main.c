@@ -31,6 +31,7 @@ static const char *TAG = "event_router_test";
 #define TEST_FATFS_PARTITION_LABEL "storage"
 #define TEST_AUTOMATION_DIR        TEST_FATFS_BASE_PATH "/auto"
 #define TEST_RULES_PATH            TEST_AUTOMATION_DIR "/rules"
+#define TEST_FALLBACK_RULES_PATH   TEST_AUTOMATION_DIR "/rules.default"
 
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
@@ -113,7 +114,9 @@ static esp_err_t write_text_file(const char *path, const char *content)
 static esp_err_t prepare_rules_file(void)
 {
     ESP_RETURN_ON_ERROR(ensure_dir(TEST_AUTOMATION_DIR), TAG, "Failed to prepare automation dir");
-    return write_text_file(TEST_RULES_PATH, s_seed_rules_json);
+    ESP_RETURN_ON_ERROR(write_text_file(TEST_FALLBACK_RULES_PATH, s_seed_rules_json),
+                        TAG, "Failed to prepare fallback rules");
+    return write_text_file(TEST_RULES_PATH, "{\n");
 }
 
 static esp_err_t init_console(void)
@@ -136,6 +139,7 @@ static esp_err_t init_event_router(void)
 {
     claw_event_router_config_t config = {
         .rules_path = TEST_RULES_PATH,
+        .fallback_rules_path = TEST_FALLBACK_RULES_PATH,
         .event_queue_len = 4,
         .task_stack_size = 4096,
         .task_priority = 4,

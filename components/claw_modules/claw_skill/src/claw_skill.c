@@ -1555,8 +1555,16 @@ esp_err_t claw_skill_add_directory(const char *dir)
         return err;
     }
 
-    /* Reload so skills under the new directory are picked up. */
-    return claw_skill_reload_registry();
+    /* Reload so skills under the new directory are picked up. If the new root
+     * is unreadable or contains a damaged document, keep the previously valid
+     * registry and remove the failed root so later reloads remain usable. */
+    err = claw_skill_reload_registry();
+    if (err != ESP_OK) {
+        free(s_skill->roots[s_skill->root_count - 1]);
+        s_skill->roots[s_skill->root_count - 1] = NULL;
+        s_skill->root_count--;
+    }
+    return err;
 }
 
 esp_err_t claw_skill_reload_registry(void)

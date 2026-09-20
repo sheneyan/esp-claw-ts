@@ -68,22 +68,41 @@ static esp_err_t copy_file(const char *src_path, const char *dst_path)
 {
     esp_err_t ret = ESP_OK;
     char buf[512];
+    char temp_path[272];
     size_t n;
     FILE *dst = NULL;
     FILE *src = fopen(src_path, "rb");
     ESP_RETURN_ON_FALSE(src, ESP_FAIL, TAG, "open src failed: %s (%s)", src_path, strerror(errno));
 
-    dst = fopen(dst_path, "wb");
-    ESP_GOTO_ON_FALSE(dst, ESP_FAIL, cleanup, TAG, "open dst failed: %s (%s)", dst_path, strerror(errno));
+    int temp_len = snprintf(temp_path, sizeof(temp_path), "%s.tmp", dst_path);
+    ESP_GOTO_ON_FALSE(temp_len > 0 && temp_len < (int)sizeof(temp_path), ESP_ERR_INVALID_SIZE,
+                      cleanup, TAG, "temp path too long: %s", dst_path);
+
+    dst = fopen(temp_path, "wb");
+    ESP_GOTO_ON_FALSE(dst, ESP_FAIL, cleanup, TAG, "open dst failed: %s (%s)", temp_path, strerror(errno));
 
     while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
         ESP_GOTO_ON_FALSE(fwrite(buf, 1, n, dst) == n, ESP_FAIL, cleanup, TAG,
-                          "write failed: %s (%s)", dst_path, strerror(errno));
+                          "write failed: %s (%s)", temp_path, strerror(errno));
     }
+    ESP_GOTO_ON_FALSE(!ferror(src), ESP_FAIL, cleanup, TAG,
+                      "read failed: %s (%s)", src_path, strerror(errno));
+    ESP_GOTO_ON_FALSE(fflush(dst) == 0, ESP_FAIL, cleanup, TAG,
+                      "flush failed: %s (%s)", temp_path, strerror(errno));
+    ESP_GOTO_ON_FALSE(fclose(dst) == 0, ESP_FAIL, cleanup, TAG,
+                      "close failed: %s (%s)", temp_path, strerror(errno));
+    dst = NULL;
+    ESP_GOTO_ON_FALSE(rename(temp_path, dst_path) == 0, ESP_FAIL, cleanup, TAG,
+                      "rename failed: %s -> %s (%s)", temp_path, dst_path, strerror(errno));
 
 cleanup:
     if (dst) {
-        fclose(dst);
+        if (fclose(dst) != 0) {
+            ret = ESP_FAIL;
+        }
+    }
+    if (ret != ESP_OK) {
+        remove(temp_path);
     }
     fclose(src);
     return ret;

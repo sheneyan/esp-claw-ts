@@ -77,6 +77,7 @@ typedef struct {
     TaskHandle_t task_handle;
     uint32_t next_request_id;
     char rules_path[192];
+    char fallback_rules_path[192];
     size_t max_rules;
     size_t max_actions_per_rule;
     size_t cap_output_size;
@@ -95,6 +96,9 @@ static claw_event_router_runtime_t *s_runtime = NULL;
 static cJSON *claw_event_router_rule_to_json(const claw_event_router_rule_t *rule);
 static esp_err_t claw_event_router_load_rules_from_file(const char *path,
                                                         claw_event_router_rule_t **out_rules,
+                                                        size_t *out_rule_count,
+                                                        cJSON **out_root);
+static esp_err_t claw_event_router_load_effective_rules(claw_event_router_rule_t **out_rules,
                                                         size_t *out_rule_count,
                                                         cJSON **out_root);
 static esp_err_t claw_event_router_write_rules_json_file(const char *path, const char *json);
@@ -1052,6 +1056,29 @@ static esp_err_t claw_event_router_load_rules_from_file(const char *path,
         cJSON_Delete(root);
     }
     return ESP_OK;
+}
+
+static esp_err_t claw_event_router_load_effective_rules(claw_event_router_rule_t **out_rules,
+                                                        size_t *out_rule_count,
+                                                        cJSON **out_root)
+{
+    esp_err_t err = claw_event_router_load_rules_from_file(s_runtime->rules_path,
+                                                           out_rules,
+                                                           out_rule_count,
+                                                           out_root);
+    if (err == ESP_OK || !s_runtime->fallback_rules_path[0]) {
+        return err;
+    }
+
+    ESP_LOGW(TAG,
+             "Rules file %s is unavailable or invalid (%s); loading fallback %s",
+             s_runtime->rules_path,
+             esp_err_to_name(err),
+             s_runtime->fallback_rules_path);
+    return claw_event_router_load_rules_from_file(s_runtime->fallback_rules_path,
+                                                  out_rules,
+                                                  out_rule_count,
+                                                  out_root);
 }
 
 static esp_err_t claw_event_router_write_rules_json_file(const char *path, const char *json)
@@ -2313,6 +2340,11 @@ esp_err_t claw_event_router_init(const claw_event_router_config_t *config)
         s_runtime->config = *config;
     }
     strlcpy(s_runtime->rules_path, config->rules_path, sizeof(s_runtime->rules_path));
+    if (config->fallback_rules_path) {
+        strlcpy(s_runtime->fallback_rules_path,
+                config->fallback_rules_path,
+                sizeof(s_runtime->fallback_rules_path));
+    }
     if (config && config->max_rules > 0) {
         s_runtime->max_rules = config->max_rules;
     }
@@ -2420,8 +2452,7 @@ esp_err_t claw_event_router_reload(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    err = claw_event_router_load_rules_from_file(s_runtime->rules_path,
-                                                 &new_rules,
+    err = claw_event_router_load_effective_rules(&new_rules,
                                                  &new_rule_count,
                                                  NULL);
     if (err != ESP_OK) {
@@ -2628,8 +2659,7 @@ esp_err_t claw_event_router_list_rules(claw_event_router_rule_t **out_rules,
         return ESP_ERR_INVALID_STATE;
     }
 
-    return claw_event_router_load_rules_from_file(s_runtime->rules_path,
-                                                  out_rules,
+    return claw_event_router_load_effective_rules(out_rules,
                                                   out_rule_count,
                                                   NULL);
 }
@@ -2676,8 +2706,7 @@ esp_err_t claw_event_router_add_rule(const claw_event_router_rule_t *rule)
         return (s_runtime && s_runtime->initialized) ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
     }
 
-    err = claw_event_router_load_rules_from_file(s_runtime->rules_path,
-                                                 &loaded_rules,
+    err = claw_event_router_load_effective_rules(&loaded_rules,
                                                  &old_rule_count,
                                                  &root);
     if (err != ESP_OK) {
@@ -2730,8 +2759,7 @@ esp_err_t claw_event_router_update_rule(const claw_event_router_rule_t *rule)
         return (s_runtime && s_runtime->initialized) ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
     }
 
-    err = claw_event_router_load_rules_from_file(s_runtime->rules_path,
-                                                 &loaded_rules,
+    err = claw_event_router_load_effective_rules(&loaded_rules,
                                                  &old_rule_count,
                                                  &root);
     if (err != ESP_OK) {
@@ -2781,8 +2809,7 @@ esp_err_t claw_event_router_delete_rule(const char *id)
         return (s_runtime && s_runtime->initialized) ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
     }
 
-    err = claw_event_router_load_rules_from_file(s_runtime->rules_path,
-                                                 &loaded_rules,
+    err = claw_event_router_load_effective_rules(&loaded_rules,
                                                  &old_rule_count,
                                                  &root);
     if (err != ESP_OK) {

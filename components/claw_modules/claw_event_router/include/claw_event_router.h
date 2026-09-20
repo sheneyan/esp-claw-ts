@@ -27,6 +27,7 @@ typedef esp_err_t (*claw_event_router_outbound_resolver_fn)(const claw_event_t *
 
 typedef struct {
     const char *rules_path;
+    const char *fallback_rules_path;
     size_t max_rules;
     size_t max_actions_per_rule;
     size_t cap_output_size;
