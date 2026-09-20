@@ -41,6 +41,9 @@ dependencies:
   wifi_manager:
     path: ../../../components/common/wifi_manager
 
+  wifi_profiles:
+    path: ../../../components/common/wifi_profiles
+
   esp_video:
     path: ../../../components/common/esp_video
     matches:
