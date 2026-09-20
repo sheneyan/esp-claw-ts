@@ -39,3 +39,16 @@ target_compile_options(test_config_persistence PRIVATE
     -Wall -Wextra -Werror -UNDEBUG
 )
 add_test(NAME config_persistence COMMAND test_config_persistence)
+
+add_executable(test_wifi_profile_runtime
+    test_wifi_profile_runtime.c
+    ../../wifi_profile_runtime.c
+)
+target_include_directories(test_wifi_profile_runtime PRIVATE
+    stubs
+    ../..
+    ../../../../../components/common/wifi_profiles/include
+)
+target_compile_features(test_wifi_profile_runtime PRIVATE c_std_11)
+target_compile_options(test_wifi_profile_runtime PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME wifi_profile_runtime COMMAND test_wifi_profile_runtime)
