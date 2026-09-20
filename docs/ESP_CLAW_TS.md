@@ -115,9 +115,25 @@ named like `esp-claw-84AEE5`. Connect to it and open:
 http://192.168.237.1/
 ```
 
-Choose the Wi-Fi settings, enter the 2.4 GHz SSID and password, save, and
-restart the device. The access point normally closes after the station joins
-Wi-Fi.
+Open **Basic Settings > Wi-Fi Settings** and save up to five 2.4 GHz networks
+in priority order. On the first upgraded boot, the legacy single SSID and
+password are migrated into the first profile automatically.
+
+- At boot or after a disconnect, the device scans once and tries visible saved
+  networks from top to bottom.
+- If every attempt fails, the provisioning AP remains available and the full
+  saved list is rescanned every 30 seconds until one profile obtains an IP.
+- A healthy connection is not roamed merely because a higher-priority network
+  becomes visible; this avoids disrupting the web UI, chat, and Tailscale.
+- **Connect now** deliberately switches networks and may drop the current web
+  session. If it fails, the remaining saved profiles are tried.
+- Stored passwords are write-only. A blank password field preserves the saved
+  password for the same SSID; selecting the open-network option explicitly
+  clears it.
+
+Saving the Wi-Fi list takes effect immediately without a reboot. AP name,
+password, and other base network settings still follow the restart guidance in
+the UI. The access point normally closes after the station joins Wi-Fi.
 
 If the SSID scan reports `esp_wifi_scan_start failed`, enter the SSID manually.
 This does not by itself mean that station association will fail.
@@ -127,7 +143,8 @@ The BOOT button provides recovery on the tested board profile:
 - Hold for 3 to 9 seconds, then release: reopen the provisioning access point.
 - Hold for at least 10 seconds, then release: factory reset and restart.
 
-A factory reset removes saved application, Wi-Fi, and ESP-Claw TS settings.
+A factory reset removes saved application settings, all Wi-Fi profiles, and
+ESP-Claw TS settings.
 
 ## Join the Tailnet
 

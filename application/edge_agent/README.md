@@ -59,7 +59,8 @@ idf.py bmgr -c ./boards -b esp32_S3_DevKitC_1
 
 The key demo settings include:
 
-- Wi-Fi SSID / Password
+- Up to five ordered Wi-Fi SSID/password profiles (passwords are write-only in
+  the web UI; the legacy single profile is migrated automatically)
 - LLM API Key / Provider / Model
 - QQ App ID / App Secret
 - Telegram Bot Token
