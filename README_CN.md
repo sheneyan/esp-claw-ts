@@ -40,6 +40,7 @@
 
 ### 本分支增加的能力
 
+- 最多保存 5 个 Wi-Fi，并按优先级自动切换；网页提供明确的“立即连接”操作
 - 通过 tailnet 访问 ESP-Claw 网页和 WebSocket 聊天
 - 设备自身的出站流量可选使用 exit node
 - 所选 exit node 不可用时回退普通 Wi-Fi

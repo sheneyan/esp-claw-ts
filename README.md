@@ -41,6 +41,8 @@
 
 ### What this fork adds
 
+- Up to five saved Wi-Fi profiles with ordered failover and an explicit
+  **Connect now** action in the Web Console
 - Tailnet access to the ESP-Claw web interface and WebSocket chat
 - Optional exit-node use for device-originated traffic
 - Wi-Fi fallback when the selected exit node is unavailable

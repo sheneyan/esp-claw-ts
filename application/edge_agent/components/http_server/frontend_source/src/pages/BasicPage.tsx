@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onMount, Show, type Component } from 'solid-js';
+import { createEffect, createSignal, Index, onMount, Show, type Component } from 'solid-js';
 import { currentLocale, t, tf } from '../i18n';
 import {
   connectWifiProfile,
@@ -218,27 +218,27 @@ export const BasicPage: Component<{ onRestartRequest: () => void }> = (props) =>
             <Show when={profilesError()}>
               <Banner kind="error" message={profilesError() ?? undefined} />
             </Show>
-            <For each={profiles()}>
+            <Index each={profiles()}>
               {(profile, index) => (
                 <div class="rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] p-3">
                   <div class="mb-2 flex items-center justify-between gap-2">
                     <span class="text-sm font-medium">
-                      {t('wifiProfilePriority') as string} {index() + 1}
-                      <Show when={profile.active}> · {t('wifiProfileActive') as string}</Show>
+                      {t('wifiProfilePriority') as string} {index + 1}
+                      <Show when={profile().active}> · {t('wifiProfileActive') as string}</Show>
                     </span>
                     <div class="flex flex-wrap gap-1.5">
                       <button
                         type="button"
-                        disabled={index() === 0 || profilesBusy()}
-                        onClick={() => moveProfile(index(), -1)}
+                        disabled={index === 0 || profilesBusy()}
+                        onClick={() => moveProfile(index, -1)}
                         class="rounded border border-[var(--color-border-subtle)] px-2 py-1 text-xs disabled:opacity-40"
                       >
                         {t('wifiProfileUp') as string}
                       </button>
                       <button
                         type="button"
-                        disabled={index() === profiles().length - 1 || profilesBusy()}
-                        onClick={() => moveProfile(index(), 1)}
+                        disabled={index === profiles().length - 1 || profilesBusy()}
+                        onClick={() => moveProfile(index, 1)}
                         class="rounded border border-[var(--color-border-subtle)] px-2 py-1 text-xs disabled:opacity-40"
                       >
                         {t('wifiProfileDown') as string}
@@ -246,7 +246,7 @@ export const BasicPage: Component<{ onRestartRequest: () => void }> = (props) =>
                       <button
                         type="button"
                         disabled={profilesDirty() || profilesBusy()}
-                        onClick={() => void connectProfile(index())}
+                        onClick={() => void connectProfile(index)}
                         class="rounded border border-[var(--color-border-subtle)] px-2 py-1 text-xs disabled:opacity-40"
                       >
                         {t('wifiProfileConnect') as string}
@@ -256,7 +256,7 @@ export const BasicPage: Component<{ onRestartRequest: () => void }> = (props) =>
                         disabled={profilesBusy()}
                         onClick={() => {
                           setProfiles((items) =>
-                            items.filter((_, itemIndex) => itemIndex !== index()),
+                            items.filter((_, itemIndex) => itemIndex !== index),
                           );
                           setProfilesDirty(true);
                         }}
@@ -269,21 +269,21 @@ export const BasicPage: Component<{ onRestartRequest: () => void }> = (props) =>
                   <div class="grid gap-3 sm:grid-cols-2">
                     <TextInput
                       label={t('wifiSsid')}
-                      value={profile.ssid}
+                      value={profile().ssid}
                       onInput={(event) =>
-                        updateProfile(index(), { ssid: event.currentTarget.value })
+                        updateProfile(index, { ssid: event.currentTarget.value })
                       }
                     />
                     <TextInput
                       type="password"
                       label={t('wifiPassword')}
                       placeholder={
-                        profile.passwordSet ? (t('wifiProfilePasswordKeep') as string) : ''
+                        profile().passwordSet ? (t('wifiProfilePasswordKeep') as string) : ''
                       }
-                      value={profile.password}
-                      disabled={profile.clearPassword}
+                      value={profile().password}
+                      disabled={profile().clearPassword}
                       onInput={(event) =>
-                        updateProfile(index(), {
+                        updateProfile(index, {
                           password: event.currentTarget.value,
                           clearPassword: false,
                         })
@@ -293,9 +293,9 @@ export const BasicPage: Component<{ onRestartRequest: () => void }> = (props) =>
                   <label class="mt-2 flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
                     <input
                       type="checkbox"
-                      checked={profile.clearPassword}
+                      checked={profile().clearPassword}
                       onChange={(event) =>
-                        updateProfile(index(), {
+                        updateProfile(index, {
                           clearPassword: event.currentTarget.checked,
                           password: '',
                         })
@@ -305,7 +305,7 @@ export const BasicPage: Component<{ onRestartRequest: () => void }> = (props) =>
                   </label>
                 </div>
               )}
-            </For>
+            </Index>
             <Show when={profiles().length === 0 && !profilesBusy()}>
               <p class="text-sm text-[var(--color-text-secondary)]">
                 {t('wifiProfilesEmpty') as string}

@@ -35,7 +35,8 @@ enum {
     WIFI_MANAGER_EVENT_SET_PROVISIONING_AP = 1,
 };
 
-#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_CONNECTED_BIT    BIT0
+#define WIFI_DISCONNECTED_BIT BIT1
 
 #ifndef CONFIG_APP_WIFI_AP_SSID_PREFIX
 #define CONFIG_APP_WIFI_AP_SSID_PREFIX "esp-claw"
@@ -57,6 +58,7 @@ enum {
 #define CONFIG_APP_WIFI_RETRY_MS 10000
 #endif
 #define WIFI_RETRY_MS CONFIG_APP_WIFI_RETRY_MS
+#define WIFI_SWITCH_DISCONNECT_TIMEOUT_MS 2000
 
 typedef enum {
     WM_STATE_OFF = 0,
@@ -384,26 +386,48 @@ static void reset_sta_runtime_state(void)
 
 esp_err_t wifi_manager_validate_config(const wifi_manager_config_t *config)
 {
-    if (!config) return ESP_ERR_INVALID_ARG;
+    if (!config) {
+        ESP_LOGW(TAG, "Wi-Fi config rejected: null config");
+        return ESP_ERR_INVALID_ARG;
+    }
     if (config->sta_ssid && config->sta_ssid[0] != '\0') {
-        if (strlen(config->sta_ssid) >= sizeof(((wifi_config_t *)0)->sta.ssid)) return ESP_ERR_INVALID_ARG;
+        if (strlen(config->sta_ssid) >= sizeof(((wifi_config_t *)0)->sta.ssid)) {
+            ESP_LOGW(TAG, "Wi-Fi config rejected: STA SSID too long");
+            return ESP_ERR_INVALID_ARG;
+        }
     }
     if (config->sta_password && config->sta_password[0] != '\0') {
         size_t n = strlen(config->sta_password);
-        if (n < 8 || n >= sizeof(((wifi_config_t *)0)->sta.password)) return ESP_ERR_INVALID_ARG;
+        if (n < 8 || n >= sizeof(((wifi_config_t *)0)->sta.password)) {
+            ESP_LOGW(TAG, "Wi-Fi config rejected: STA password length=%u", (unsigned)n);
+            return ESP_ERR_INVALID_ARG;
+        }
     }
     if (config->ap_password && config->ap_password[0] != '\0') {
         size_t n = strlen(config->ap_password);
-        if (n < 8 || n >= sizeof(((wifi_config_t *)0)->ap.password)) return ESP_ERR_INVALID_ARG;
+        if (n < 8 || n >= sizeof(((wifi_config_t *)0)->ap.password)) {
+            ESP_LOGW(TAG, "Wi-Fi config rejected: AP password length=%u", (unsigned)n);
+            return ESP_ERR_INVALID_ARG;
+        }
     }
-    if (config->ap_ssid && strlen(config->ap_ssid) > sizeof(((wifi_config_t *)0)->ap.ssid)) return ESP_ERR_INVALID_ARG;
-    if (config->ap_ssid_prefix && strlen(config->ap_ssid_prefix) >= sizeof(s_ap_ssid) - 7) return ESP_ERR_INVALID_ARG;
-    if (!wifi_manager_ap_behavior_is_valid(config->ap_behavior)) return ESP_ERR_INVALID_ARG;
+    if (config->ap_ssid && strlen(config->ap_ssid) > sizeof(((wifi_config_t *)0)->ap.ssid)) {
+        ESP_LOGW(TAG, "Wi-Fi config rejected: AP SSID too long");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (config->ap_ssid_prefix && strlen(config->ap_ssid_prefix) >= sizeof(s_ap_ssid) - 7) {
+        ESP_LOGW(TAG, "Wi-Fi config rejected: AP SSID prefix too long");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!wifi_manager_ap_behavior_is_valid(config->ap_behavior)) {
+        ESP_LOGW(TAG, "Wi-Fi config rejected: invalid AP behavior");
+        return ESP_ERR_INVALID_ARG;
+    }
     esp_ip4_addr_t parsed = {0};
     if (parse_optional_ip4(config->ap_ip, &parsed) != ESP_OK ||
         parse_optional_ip4(config->ap_netmask, &parsed) != ESP_OK ||
         parse_optional_ip4(config->dhcp_start, &parsed) != ESP_OK ||
         parse_optional_ip4(config->dhcp_end, &parsed) != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi config rejected: invalid AP/DHCP IPv4 setting");
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
@@ -528,6 +552,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         case WIFI_EVENT_STA_DISCONNECTED: {
             const wifi_event_sta_disconnected_t *disc = event_data;
             uint16_t reason = disc ? disc->reason : 0;
+            xEventGroupSetBits(s_wifi_event_group, WIFI_DISCONNECTED_BIT);
             strlcpy(s_ip_addr, "0.0.0.0", sizeof(s_ip_addr));
             if (s_connected) {
                 s_connected = false;
@@ -661,6 +686,40 @@ esp_err_t wifi_manager_apply_sta_config(const wifi_manager_config_t *config)
     if (!config) return ESP_ERR_INVALID_ARG;
 
     bool was_connected = s_connected;
+
+    /*
+     * esp_wifi_set_config() rejects a new STA configuration while the driver
+     * is still connecting.  Profile failover must therefore finish cancelling
+     * the previous attempt before configure_sta_mode() writes the next one.
+     * Merely calling esp_wifi_disconnect() is insufficient because the
+     * disconnect event is delivered asynchronously.
+     */
+    if (s_wifi_started) {
+        if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
+        wifi_mode_t current_mode = WIFI_MODE_NULL;
+        esp_err_t mode_err = esp_wifi_get_mode(&current_mode);
+        if (mode_err != ESP_OK) return mode_err;
+
+        /* In AP-only mode there is no STA attempt to cancel. */
+        if (current_mode == WIFI_MODE_STA || current_mode == WIFI_MODE_APSTA) {
+            xEventGroupClearBits(s_wifi_event_group, WIFI_DISCONNECTED_BIT);
+            esp_err_t disconnect_err = esp_wifi_disconnect();
+            if (disconnect_err == ESP_OK) {
+                EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                                       WIFI_DISCONNECTED_BIT,
+                                                       pdTRUE,
+                                                       pdFALSE,
+                                                       pdMS_TO_TICKS(WIFI_SWITCH_DISCONNECT_TIMEOUT_MS));
+                if (!(bits & WIFI_DISCONNECTED_BIT)) {
+                    ESP_LOGW(TAG, "Timed out cancelling previous STA attempt");
+                    return ESP_ERR_TIMEOUT;
+                }
+            } else if (disconnect_err != ESP_ERR_WIFI_NOT_CONNECT) {
+                return disconnect_err;
+            }
+        }
+    }
+
     esp_err_t err = configure_sta_mode(config);
     if (err != ESP_OK) return err;
 
@@ -674,8 +733,6 @@ esp_err_t wifi_manager_apply_sta_config(const wifi_manager_config_t *config)
 
     if (!s_sta_configured) return ESP_OK;
 
-    err = esp_wifi_disconnect();
-    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) return err;
     err = esp_wifi_connect();
     if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) return err;
     return ESP_OK;

@@ -77,6 +77,17 @@ describe('BasicPage saved Wi-Fi profiles', () => {
     expect(screen.getByRole('button', { name: 'Add network' })).toBeDisabled();
   });
 
+  it('keeps the SSID input focused while editing a profile', async () => {
+    render(() => <BasicPage onRestartRequest={() => undefined} />);
+
+    const ssidInput = (await screen.findByDisplayValue('Office')) as HTMLInputElement;
+    ssidInput.focus();
+    fireEvent.input(ssidInput, { target: { value: 'Office-2' } });
+
+    expect(document.activeElement).toBe(ssidInput);
+    expect(ssidInput.value).toBe('Office-2');
+  });
+
   it('saves reordered profiles and confirms an explicit switch', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(() => <BasicPage onRestartRequest={() => undefined} />);

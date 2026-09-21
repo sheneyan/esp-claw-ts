@@ -62,9 +62,21 @@ Web Chat currently does not support receiving image attachments.
 
 Basic settings include Wi-Fi and timezone settings.
 
-- Wi-Fi settings configure SSID and password. <RestartBadge />
+- Wi-Fi settings store up to five networks in priority order. Saving the list
+  takes effect immediately; adding or editing a profile does not require a
+  restart.
+  - At startup or after a disconnect, ESP-Claw tries visible saved networks in
+    list order, then directly tries saved profiles omitted from the scan result.
+    Each attempt is bounded, and a failed cycle is retried after 30 seconds.
+  - A healthy connection is not automatically roamed to a higher-priority
+    network. Use **Connect now** for an explicit switch; the current Web Console
+    session may disconnect as the device changes networks.
+  - If all profiles fail, the provisioning SoftAP remains available. Saved
+    profiles are not erased.
+  - A blank password preserves the existing password for the same SSID. Use
+    **Clear saved password (open network)** only when the network intentionally
+    has no password.
   - Currently, except ESP32-C5, other chips only support 2.4 GHz Wi-Fi.
-  - Empty password means the current Wi-Fi has no password.
 - SoftAP settings configure SoftAP SSID, password, and start/stop behavior. <RestartBadge />
   - ESP-Claw enables SoftAP by default for provisioning and configuration adjustments.
   - Empty SSID means using the MAC-based default SSID (`esp-claw-XXXXXX`).

@@ -20,6 +20,7 @@ typedef struct {
 
 typedef struct {
     size_t next_index;
+    bool fallback_phase;
 } wifi_manager_profile_attempt_t;
 
 int wifi_manager_profile_pick_next(const wifi_profiles_t *profiles,

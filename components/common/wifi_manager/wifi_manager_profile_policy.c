@@ -46,7 +46,18 @@ void wifi_manager_profile_attempt_begin(wifi_manager_profile_attempt_t *attempt)
 {
     if (attempt) {
         attempt->next_index = 0;
+        attempt->fallback_phase = false;
     }
+}
+
+static bool profile_is_visible(const char *ssid,
+                               const wifi_manager_profile_visible_t *visible,
+                               size_t visible_count)
+{
+    for (size_t index = 0; index < visible_count; ++index) {
+        if (strcmp(ssid, visible[index].ssid) == 0) return true;
+    }
+    return false;
 }
 
 int wifi_manager_profile_attempt_next(wifi_manager_profile_attempt_t *attempt,
@@ -57,10 +68,25 @@ int wifi_manager_profile_attempt_next(wifi_manager_profile_attempt_t *attempt,
     if (!attempt) {
         return -1;
     }
-    int selected = wifi_manager_profile_pick_next(profiles, visible, visible_count,
-                                                  attempt->next_index);
-    if (selected >= 0) {
-        attempt->next_index = (size_t)selected + 1u;
+
+    if (!attempt->fallback_phase) {
+        int selected = wifi_manager_profile_pick_next(profiles, visible, visible_count,
+                                                      attempt->next_index);
+        if (selected >= 0) {
+            attempt->next_index = (size_t)selected + 1u;
+            return selected;
+        }
+        attempt->fallback_phase = true;
+        attempt->next_index = 0;
     }
-    return selected;
+
+    if (!profiles || !visible) return -1;
+    while (attempt->next_index < WIFI_PROFILES_MAX_COUNT) {
+        size_t index = attempt->next_index++;
+        const char *ssid = profiles->entries[index].ssid;
+        if (ssid[0] != '\0' && !profile_is_visible(ssid, visible, visible_count)) {
+            return (int)index;
+        }
+    }
+    return -1;
 }

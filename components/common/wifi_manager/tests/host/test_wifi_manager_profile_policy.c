@@ -34,6 +34,16 @@ int main(void)
     assert(wifi_manager_profile_attempt_next(&attempt, &profiles, visible, 3) == 2);
     assert(wifi_manager_profile_attempt_next(&attempt, &profiles, visible, 3) == -1);
 
+    /* A successful scan is only a hint: omitted/hidden saved networks must
+     * still be attempted after the visible candidates. */
+    wifi_manager_profile_visible_t partial_visible[1] = {0};
+    set_ssid(partial_visible[0].ssid, sizeof(partial_visible[0].ssid), "Phone");
+    wifi_manager_profile_attempt_begin(&attempt);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, partial_visible, 1) == 2);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, partial_visible, 1) == 0);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, partial_visible, 1) == 1);
+    assert(wifi_manager_profile_attempt_next(&attempt, &profiles, partial_visible, 1) == -1);
+
     puts("wifi_manager_profile_policy: all tests passed");
     return 0;
 }

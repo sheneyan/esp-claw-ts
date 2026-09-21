@@ -5,6 +5,7 @@ set(EDGE_AGENT_MAIN_SRCS
     "main.c"
     "wifi_profile_runtime.c"
     "wifi_profile_worker.c"
+    "wifi_profile_worker_config.c"
 )
 set(EDGE_AGENT_MAIN_PRIV_REQUIRES "")
 if(CONFIG_ESP_BOARD_ESP32_S3_N16R8_TS_CLAW)

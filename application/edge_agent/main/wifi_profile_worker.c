@@ -9,6 +9,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "wifi_manager_profile_policy.h"
+#include "wifi_profile_worker_config.h"
 
 static const char *TAG = "wifi_profile_worker";
 
@@ -31,7 +32,7 @@ typedef struct {
 
 struct wifi_profile_worker {
     wifi_profile_runtime_t *runtime;
-    wifi_manager_config_t base_config;
+    wifi_profile_worker_config_t base_config;
     QueueHandle_t queue;
     TaskHandle_t task;
     volatile bool busy;
@@ -40,15 +41,21 @@ struct wifi_profile_worker {
 static esp_err_t apply_profile(struct wifi_profile_worker *worker, size_t index)
 {
     const wifi_profile_t *profile = &worker->runtime->profiles.entries[index];
-    wifi_manager_config_t config = worker->base_config;
+    wifi_manager_config_t config = worker->base_config.config;
     config.sta_ssid = profile->ssid;
     config.sta_password = profile->password;
     esp_err_t err = wifi_manager_apply_sta_config(&config);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Profile %u (%s) could not start: %s", (unsigned)index,
+                 profile->ssid, esp_err_to_name(err));
+        return err;
+    }
     err = wifi_manager_wait_connected(WIFI_PROFILE_CONNECT_TIMEOUT_MS);
     if (err == ESP_OK) {
         worker->runtime->selected_index = (int)index;
         ESP_LOGI(TAG, "Connected profile %u (%s)", (unsigned)index, profile->ssid);
+    } else {
+        ESP_LOGW(TAG, "Profile %u (%s) timed out", (unsigned)index, profile->ssid);
     }
     return err;
 }
@@ -71,6 +78,7 @@ static bool run_auto(struct wifi_profile_worker *worker, int skip_index)
     uint16_t count = 0;
     esp_err_t scan_err = wifi_manager_scan_aps(records, WIFI_PROFILE_SCAN_LIMIT, &count);
     if (scan_err == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi scan returned %u AP(s)", (unsigned)count);
         for (uint16_t i = 0; i < count; ++i) {
             strlcpy(visible[i].ssid, records[i].ssid, sizeof(visible[i].ssid));
         }
@@ -86,6 +94,20 @@ static bool run_auto(struct wifi_profile_worker *worker, int skip_index)
         }
     }
 
+    for (size_t profile_index = 0; profile_index < WIFI_PROFILES_MAX_COUNT; ++profile_index) {
+        const char *ssid = worker->runtime->profiles.entries[profile_index].ssid;
+        if (!ssid[0]) continue;
+        bool is_visible = false;
+        for (uint16_t visible_index = 0; visible_index < count; ++visible_index) {
+            if (strcmp(ssid, visible[visible_index].ssid) == 0) {
+                is_visible = true;
+                break;
+            }
+        }
+        ESP_LOGI(TAG, "Saved profile %u (%s): %s", (unsigned)profile_index, ssid,
+                 is_visible ? "visible" : "not visible");
+    }
+
     wifi_manager_profile_attempt_t attempt;
     wifi_manager_profile_attempt_begin(&attempt);
     for (;;) {
@@ -93,12 +115,15 @@ static bool run_auto(struct wifi_profile_worker *worker, int skip_index)
                                                       visible, count);
         if (index < 0) break;
         if (index == skip_index) continue;
+        ESP_LOGI(TAG, "Trying saved profile %u (%s)", (unsigned)index,
+                 worker->runtime->profiles.entries[index].ssid);
         if (apply_profile(worker, (size_t)index) == ESP_OK) {
             free(records);
             free(visible);
             return true;
         }
     }
+    ESP_LOGW(TAG, "No saved Wi-Fi profile connected in this cycle");
     free(records);
     free(visible);
     return false;
@@ -141,9 +166,11 @@ esp_err_t wifi_profile_worker_start(wifi_profile_runtime_t *runtime,
     struct wifi_profile_worker *worker = calloc(1, sizeof(*worker));
     if (!worker) return ESP_ERR_NO_MEM;
     worker->runtime = runtime;
-    worker->base_config = *base_config;
-    worker->base_config.sta_ssid = NULL;
-    worker->base_config.sta_password = NULL;
+    esp_err_t err = wifi_profile_worker_config_init(&worker->base_config, base_config);
+    if (err != ESP_OK) {
+        free(worker);
+        return err;
+    }
     worker->queue = xQueueCreate(4, sizeof(wifi_profile_request_t));
     if (!worker->queue) {
         free(worker);

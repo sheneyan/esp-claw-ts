@@ -277,6 +277,14 @@ static esp_err_t main_save_wifi_profiles(const http_server_wifi_profile_update_t
             break;
         }
     }
+
+    if (s_wifi_profile_worker) {
+        esp_err_t notify_err = wifi_profile_worker_notify(s_wifi_profile_worker, false);
+        if (notify_err != ESP_OK) {
+            ESP_LOGW(TAG, "Saved Wi-Fi profiles but could not start immediate retry: %s",
+                     esp_err_to_name(notify_err));
+        }
+    }
     return ESP_OK;
 }
 

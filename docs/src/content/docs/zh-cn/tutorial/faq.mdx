@@ -19,8 +19,14 @@ import { Aside } from '@astrojs/starlight/components';
 - Wi-Fi 信号过差。
 
 **排查建议：**
-1. 通过 SoftAP 下的 Web 配置页，修改 Wi-Fi SSID 与密码，连接到 2.4G Wi-Fi。[➡️Web 配置](@lang/tutorial/web-config)
+1. 通过 SoftAP 下的 Web 配置页，检查已保存 Wi-Fi 及其优先级，并连接到 2.4 GHz
+   Wi-Fi。[➡️Web 配置](@lang/tutorial/web-config)
 2. 使开发板靠近路由器。如果开发板带天线座，检查与天线连接是否良好。
+3. 如果串口反复显示 `Brownout detector was triggered`，请断开 GPIO 外设，换用确认
+   可靠的数据线和供电充足的 USB 接口。这是供电故障，不是 Wi-Fi 配置或 FATFS 错误。
+
+全部已保存网络都失败时，配网 SoftAP 应继续保留，设备会在 30 秒后重试列表。
+点击“立即连接”会先主动断开当前 STA，因此切换期间当前网页可能暂时无法访问。
 
 ### `ask` 超时或没有回复
 

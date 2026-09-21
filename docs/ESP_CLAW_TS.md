@@ -119,8 +119,10 @@ Open **Basic Settings > Wi-Fi Settings** and save up to five 2.4 GHz networks
 in priority order. On the first upgraded boot, the legacy single SSID and
 password are migrated into the first profile automatically.
 
-- At boot or after a disconnect, the device scans once and tries visible saved
-  networks from top to bottom.
+- At boot or after a disconnect, the device scans once, tries visible saved
+  networks from top to bottom, then directly tries saved profiles omitted from
+  the scan result. This avoids treating a truncated or incomplete scan as proof
+  that a saved network is unavailable.
 - If every attempt fails, the provisioning AP remains available and the full
   saved list is rescanned every 30 seconds until one profile obtains an IP.
 - A healthy connection is not roamed merely because a higher-priority network
@@ -137,6 +139,12 @@ the UI. The access point normally closes after the station joins Wi-Fi.
 
 If the SSID scan reports `esp_wifi_scan_start failed`, enter the SSID manually.
 This does not by itself mean that station association will fail.
+
+If the provisioning AP disappears and serial output repeatedly reports
+`Brownout detector was triggered`, first disconnect GPIO peripherals and try a
+known-good data cable and adequately powered USB port. A brownout during Wi-Fi
+radio initialization is a power-integrity fault, not evidence that the saved
+profile list or FATFS is damaged.
 
 The BOOT button provides recovery on the tested board profile:
 

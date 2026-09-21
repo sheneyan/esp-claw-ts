@@ -52,3 +52,16 @@ target_include_directories(test_wifi_profile_runtime PRIVATE
 target_compile_features(test_wifi_profile_runtime PRIVATE c_std_11)
 target_compile_options(test_wifi_profile_runtime PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME wifi_profile_runtime COMMAND test_wifi_profile_runtime)
+
+add_executable(test_wifi_profile_worker_config
+    test_wifi_profile_worker_config.c
+    ../../wifi_profile_worker_config.c
+)
+target_include_directories(test_wifi_profile_worker_config PRIVATE
+    stubs
+    ../..
+    ../../../../../components/common/wifi_manager/include
+)
+target_compile_features(test_wifi_profile_worker_config PRIVATE c_std_11)
+target_compile_options(test_wifi_profile_worker_config PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME wifi_profile_worker_config COMMAND test_wifi_profile_worker_config)
